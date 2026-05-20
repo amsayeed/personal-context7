@@ -16,6 +16,8 @@ from typing import Iterable, Sequence
 
 import sqlite_vec
 
+INDEX_VERSION = 2
+
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -32,6 +34,14 @@ CREATE TABLE IF NOT EXISTS documents (
     domain      TEXT,                       -- data / ai / system-design / arch-patterns / unknown
     trust_tier  INTEGER NOT NULL DEFAULT 1, -- 0..3 (see config.tier_boost)
     folder      TEXT,                       -- top-level folder, proxy for category
+    summary     TEXT,
+    aliases_json TEXT,
+    key_concepts_json TEXT,
+    canonical_for_json TEXT,
+    canonical_questions_json TEXT,
+    last_reviewed TEXT,
+    freshness_status TEXT,
+    index_version INTEGER NOT NULL DEFAULT 2,
     mtime       REAL NOT NULL,
     n_chunks    INTEGER NOT NULL
 );
@@ -72,6 +82,14 @@ _MIGRATIONS = [
     "ALTER TABLE documents ADD COLUMN domain TEXT",
     "ALTER TABLE documents ADD COLUMN trust_tier INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE documents ADD COLUMN folder TEXT",
+    "ALTER TABLE documents ADD COLUMN summary TEXT",
+    "ALTER TABLE documents ADD COLUMN aliases_json TEXT",
+    "ALTER TABLE documents ADD COLUMN key_concepts_json TEXT",
+    "ALTER TABLE documents ADD COLUMN canonical_for_json TEXT",
+    "ALTER TABLE documents ADD COLUMN canonical_questions_json TEXT",
+    "ALTER TABLE documents ADD COLUMN last_reviewed TEXT",
+    "ALTER TABLE documents ADD COLUMN freshness_status TEXT",
+    "ALTER TABLE documents ADD COLUMN index_version INTEGER NOT NULL DEFAULT 1",
 ]
 
 
@@ -116,14 +134,24 @@ def upsert_document(
     domain: str,
     trust_tier: int,
     folder: str,
+    summary: str,
+    aliases: list[str],
+    key_concepts: list[str],
+    canonical_for: list[str],
+    canonical_questions: list[str],
+    last_reviewed: str,
+    freshness_status: str,
     mtime: float,
     n_chunks: int,
 ) -> None:
     conn.execute(
         """
         INSERT INTO documents
-            (doc_id, path, title, tags_json, source_type, domain, trust_tier, folder, mtime, n_chunks)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (doc_id, path, title, tags_json, source_type, domain, trust_tier, folder,
+             summary, aliases_json, key_concepts_json, canonical_for_json,
+             canonical_questions_json, last_reviewed, freshness_status, index_version,
+             mtime, n_chunks)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(doc_id) DO UPDATE SET
             path=excluded.path,
             title=excluded.title,
@@ -132,11 +160,22 @@ def upsert_document(
             domain=excluded.domain,
             trust_tier=excluded.trust_tier,
             folder=excluded.folder,
+            summary=excluded.summary,
+            aliases_json=excluded.aliases_json,
+            key_concepts_json=excluded.key_concepts_json,
+            canonical_for_json=excluded.canonical_for_json,
+            canonical_questions_json=excluded.canonical_questions_json,
+            last_reviewed=excluded.last_reviewed,
+            freshness_status=excluded.freshness_status,
+            index_version=excluded.index_version,
             mtime=excluded.mtime,
             n_chunks=excluded.n_chunks
         """,
         (doc_id, path, title, json.dumps(tags),
-         source_type, domain, int(trust_tier), folder, mtime, n_chunks),
+         source_type, domain, int(trust_tier), folder, summary,
+         json.dumps(aliases), json.dumps(key_concepts), json.dumps(canonical_for),
+         json.dumps(canonical_questions), last_reviewed, freshness_status, INDEX_VERSION,
+         mtime, n_chunks),
     )
 
 
@@ -186,8 +225,27 @@ def doc_mtime(conn: sqlite3.Connection, path: str) -> float | None:
     return row["mtime"] if row else None
 
 
+def doc_index_version(conn: sqlite3.Connection, path: str) -> int | None:
+    row = conn.execute("SELECT index_version FROM documents WHERE path = ?", (path,)).fetchone()
+    return int(row["index_version"]) if row else None
+
+
 def all_paths(conn: sqlite3.Connection) -> set[str]:
     return {r["path"] for r in conn.execute("SELECT path FROM documents")}
+
+
+def doc_metadata(conn: sqlite3.Connection, path: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT path, title, tags_json, source_type, domain, trust_tier, folder,
+               summary, aliases_json, key_concepts_json, canonical_for_json,
+               canonical_questions_json, last_reviewed, freshness_status, index_version,
+               mtime, n_chunks
+        FROM documents
+        WHERE path = ?
+        """,
+        (path,),
+    ).fetchone()
 
 
 def _fts_query(q: str) -> str:
@@ -203,12 +261,17 @@ def _build_filters(
     sql: str,
     params: list,
     *,
+    paths: Iterable[str] | None,
     tags: Iterable[str] | None,
     source_types: Iterable[str] | None,
     domains: Iterable[str] | None,
     folders: Iterable[str] | None,
     min_tier: int | None,
 ) -> str:
+    if paths:
+        ps = list(paths)
+        sql += f" AND d.path IN ({','.join('?' * len(ps))})"
+        params.extend(ps)
     if tags:
         for tag in tags:
             sql += " AND d.tags_json LIKE ?"
@@ -236,6 +299,7 @@ def bm25_search(
     query: str,
     k: int,
     *,
+    paths: Iterable[str] | None = None,
     tags: Iterable[str] | None = None,
     source_types: Iterable[str] | None = None,
     domains: Iterable[str] | None = None,
@@ -246,6 +310,8 @@ def bm25_search(
     SELECT
         c.chunk_id, d.path, d.title, c.heading_path, c.text, c.n_tokens,
         d.source_type, d.domain, d.trust_tier, d.folder,
+        d.summary, d.aliases_json, d.key_concepts_json, d.canonical_for_json,
+        d.canonical_questions_json, d.last_reviewed, d.freshness_status,
         -bm25(chunks_fts) AS score
     FROM chunks_fts
     JOIN chunks   c ON c.rowid = chunks_fts.rowid
@@ -253,7 +319,7 @@ def bm25_search(
     WHERE chunks_fts MATCH ?
     """
     params: list = [_fts_query(query)]
-    sql = _build_filters(sql, params, tags=tags, source_types=source_types,
+    sql = _build_filters(sql, params, paths=paths, tags=tags, source_types=source_types,
                          domains=domains, folders=folders, min_tier=min_tier)
     sql += " ORDER BY score DESC LIMIT ?"
     params.append(k)
@@ -265,6 +331,7 @@ def vec_search(
     embedding: Sequence[float],
     k: int,
     *,
+    paths: Iterable[str] | None = None,
     tags: Iterable[str] | None = None,
     source_types: Iterable[str] | None = None,
     domains: Iterable[str] | None = None,
@@ -277,11 +344,19 @@ def vec_search(
     Note: we over-fetch from vec0 (k * 3) when filters are present so we still
     have ~k passing the filter. Cheap.
     """
-    overfetch = k * 3 if any([tags, source_types, domains, folders, min_tier is not None]) else k
+    if paths:
+        row = conn.execute("SELECT COUNT(*) AS n FROM chunks_vec").fetchone()
+        overfetch = max(k, int(row["n"] or 0))
+    elif any([tags, source_types, domains, folders, min_tier is not None]):
+        overfetch = k * 3
+    else:
+        overfetch = k
     sql = """
     SELECT
         c.chunk_id, d.path, d.title, c.heading_path, c.text, c.n_tokens,
         d.source_type, d.domain, d.trust_tier, d.folder,
+        d.summary, d.aliases_json, d.key_concepts_json, d.canonical_for_json,
+        d.canonical_questions_json, d.last_reviewed, d.freshness_status,
         v.distance AS distance
     FROM chunks_vec v
     JOIN chunks    c ON c.rowid = v.chunk_rowid
@@ -289,7 +364,7 @@ def vec_search(
     WHERE v.embedding MATCH ? AND k = ?
     """
     params: list = [f32_blob(embedding), overfetch]
-    sql = _build_filters(sql, params, tags=tags, source_types=source_types,
+    sql = _build_filters(sql, params, paths=paths, tags=tags, source_types=source_types,
                          domains=domains, folders=folders, min_tier=min_tier)
     sql += " ORDER BY v.distance LIMIT ?"
     params.append(k)

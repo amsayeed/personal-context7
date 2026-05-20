@@ -21,6 +21,8 @@ your agents (Claude Code, Cowork, Cursor, …)
 - **Metadata-aware ranking** — `trust_tier` soft-boosts your own synthesis over raw highlights over archive.
 - **Cross-encoder rerank** — on by default; ~150ms latency, big quality lift.
 - **Multi-hop** — `multi_search` for comparative questions, `hyde_search` when phrasing diverges from notes.
+- **Context7-style metadata** — summaries, aliases, canonical topics/questions, freshness, and JSON citation payloads.
+- **Quality loop** — `pkb doctor` for vault hygiene and `pkb eval` for retrieval recall/MRR fixtures.
 - **Hard filters** — by `tags`, `source_type`, `domain`, `folder`, `min_tier`.
 - **Two transports** — stdio (local) or SSE (hosted) over the same code, same tool set.
 - **Git-backed KB** — clones a private repo on boot, pulls on `/webhook/sync` or via the `sync` MCP tool.
@@ -57,7 +59,7 @@ pkb sync                 # incremental from then on
 pkb serve                # MCP stdio — point a local MCP client at this command
 ```
 
-CLI also has `pkb search "..."`, `pkb topic "..."`, `pkb stats` for poking around.
+CLI also has `pkb search "..."`, `pkb smart "..."`, `pkb topic "..."`, `pkb doctor`, `pkb eval evals/questions.jsonl`, and `pkb stats` for poking around.
 
 ## How to prepare your vault
 
@@ -87,6 +89,16 @@ See `docs/AGENT_INTEGRATION.md`. SSE URL + bearer header is all most MCP clients
 | `PKB_BM25_TOPK`         | `50`                          | Candidates from FTS5.                            |
 | `PKB_VEC_TOPK`          | `50`                          | Candidates from sqlite-vec.                      |
 | `PKB_RRF_K`             | `60`                          | RRF constant.                                    |
+
+## Retrieval quality loop
+
+Run `pkb doctor` to catch missing metadata, duplicate titles, stale reviews, broken wikilinks, empty notes, and large chunks. Add JSONL fixtures like:
+
+```jsonl
+{"question":"When should I use event sourcing?","expected_sources":["arch-patterns/event-sourcing.md"]}
+```
+
+Then run `pkb eval evals/questions.jsonl` to track recall@k and MRR as the vault and ranking logic evolve.
 
 ## Design choices, one-liner each
 

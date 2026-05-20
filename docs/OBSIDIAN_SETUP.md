@@ -50,6 +50,15 @@ domain: system-design     # data | ai | system-design | arch-patterns
 source_type: own-note     # book | blog | paper | adr | own-note
 trust_tier: 2             # 0=archive, 1=reference, 2=canonical, 3=synthesis
 tags: [distributed-systems, consistency]
+summary: "CAP says partitions force a choice between availability and linearizable consistency."
+aliases: [CAP, PACELC]
+key_concepts: [partition tolerance, availability, consistency]
+canonical_for: [CAP theorem, distributed consistency]
+canonical_questions:
+  - "When does CAP matter?"
+  - "How does PACELC extend CAP?"
+last_reviewed: 2026-05-20
+freshness_status: evergreen
 ---
 ```
 
@@ -60,6 +69,12 @@ What each field actually does:
 - **`source_type`** — hard-filterable. Useful for "only my own synthesis" (`source_type="own-note"`) or "only books" (`source_type="book"`).
 - **`trust_tier`** — *soft boost*. Higher-tier notes get a score multiplier (1.5× at tier 3, 1.2× at tier 2, 1.0× at tier 1, 0.6× at tier 0). This is the most important field — it's how you tell the system *"my own synthesis beats raw highlights, raw highlights beat archived notes."*
 - **`tags`** — front-matter tags become filterable. Inline `#tags` in the body are *also* picked up and added to this set automatically.
+- **`summary`** — indexed into every chunk and returned in JSON tools. Give canonical notes a blunt one-sentence answer.
+- **`aliases`** — alternate names and acronyms. These are indexed and help `resolve_topic` match user phrasing.
+- **`key_concepts`** — concepts this note covers. Use these for broad recall.
+- **`canonical_for`** — topics this note should win for. This is the strongest manual topic-resolution hint.
+- **`canonical_questions`** — natural-language questions the note should answer. Useful for eval design and query matching.
+- **`last_reviewed` / `freshness_status`** — used by `pkb doctor` and returned by `/stats`/JSON tools.
 
 ### Tier guidance (the rule of thumb)
 
@@ -93,6 +108,34 @@ A few habits that make retrieval better, independent of `pkb`:
 **Lead with the conclusion.** Embedding models attend more strongly to the first paragraph of each section. If you have a punchline, put it first; reasoning below.
 
 **Inline tags for in-section topics.** `#caching` inside a CAP note adds a retrieval hook for that section without polluting the front matter. They're aggregated into the doc's tag set automatically.
+
+## Quality loop
+
+Run the doctor after editing batches of notes:
+
+```bash
+pkb doctor
+pkb doctor --json
+```
+
+It checks missing front matter, unknown domains/source types, stale reviews, duplicate titles, broken wikilinks, empty notes, and over-large chunks.
+
+To customize allowed domains/source types, put `.pkb-vocab.json` at the root of your notes repo. Start from `docs/VOCAB.example.json`.
+
+Keep a small retrieval eval file in your notes or this repo:
+
+```jsonl
+{"question":"When should I use event sourcing?","expected_sources":["arch-patterns/event-sourcing.md"]}
+{"question":"How does PACELC extend CAP?","expected_sources":["system-design/cap-and-consistency.md"]}
+```
+
+Then run:
+
+```bash
+pkb eval evals/questions.jsonl
+```
+
+The report includes recall@k and MRR. Add questions whenever an agent misses an answer you expected it to find.
 
 ## What `pkb` doesn't do (yet)
 

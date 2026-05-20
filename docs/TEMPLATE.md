@@ -5,6 +5,12 @@ source_type: own-note          # book | blog | paper | adr | own-note
 trust_tier: 2                  # 0 archive · 1 reference · 2 canonical · 3 your synthesis
 tags: [tag1, tag2]             # front-matter tags; inline #tags in body are merged in
 aliases: []                    # optional: alternate names (not indexed yet, useful for Obsidian)
+summary: ""                    # one sentence; indexed into every chunk
+key_concepts: []               # concepts the note should resolve for
+canonical_for: []              # topics this note should win in resolve_topic
+canonical_questions: []        # questions this note should answer
+last_reviewed: 2026-05-20      # used by pkb doctor
+freshness_status: current      # current | stale | evergreen | archived
 created: 2026-05-20
 ---
 
@@ -66,11 +72,13 @@ HOW TO USE THIS TEMPLATE
 
 1. Copy this file to the right folder (e.g. system-design/cap.md).
 2. Edit the front matter — esp. trust_tier. Be deliberate.
-3. Headings matter — pkb prepends "H1 > H2 > H3" to each chunk before embedding,
+3. Fill `summary`, `canonical_for`, and `canonical_questions` on important notes.
+   pkb indexes those fields into every chunk, which makes topic resolution much sharper.
+4. Headings matter — pkb prepends "H1 > H2 > H3" to each chunk before embedding,
    so specific headings act as a free retrieval signal.
-4. Inline #tags in the body are picked up automatically — use them for in-section
+5. Inline #tags in the body are picked up automatically — use them for in-section
    topics without bloating the front matter list.
-5. Lead each section with the conclusion. The first paragraph dominates the chunk.
+6. Lead each section with the conclusion. The first paragraph dominates the chunk.
 
 TIER GUIDANCE
 =============

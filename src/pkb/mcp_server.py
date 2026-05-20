@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from threading import Thread
 
 from mcp.server.fastmcp import FastMCP
 
 from . import config as cfg_module
-from . import retriever, store
+from . import doctor as doctor_module
+from . import retriever, stats as stats_module, store
+from .chunker import walk_kb
 from .retriever import Filters
 from .sync import bootstrap_kb, sync_now
 
@@ -42,6 +44,19 @@ mcp = FastMCP("pkb")
 
 _conn = store.connect(cfg.db_path)
 store.init(_conn, cfg.embed_dim)
+
+if cfg.transport == "sse":
+    n_docs = _conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"]
+    if n_docs == 0 and cfg.kb_root.exists() and any(walk_kb(cfg.kb_root)):
+        def initial_sync() -> None:
+            log.info("empty index detected in hosted mode; running initial sync")
+            result = sync_now(cfg)
+            if result.ok:
+                log.info("initial sync complete: %s", result.message)
+            else:
+                log.error("initial sync failed: %s", result.message)
+
+        Thread(target=initial_sync, name="pkb-initial-sync", daemon=True).start()
 
 
 def _filt(
@@ -62,11 +77,18 @@ def _render_hits(hits) -> str:
     for i, h in enumerate(hits, 1):
         meta = f"tier={h.trust_tier} • {h.source_type} • {h.domain}"
         parts.append(f"### [{i}] {h.title} — {h.heading_path}")
-        parts.append(f"_source: `{h.path}` • score: {h.score:.4f} • {meta} • via: {','.join(h.sources)}_")
+        parts.append(
+            f"_source: `{h.path}` • score: {h.score:.4f} • {meta} "
+            f"• via: {','.join(h.sources)}_"
+        )
         parts.append("")
         parts.append(h.text)
         parts.append("")
     return "\n".join(parts)
+
+
+def _hits_json(hits) -> str:
+    return json.dumps([retriever.hit_record(hit) for hit in hits], ensure_ascii=False, indent=2)
 
 
 # ---------- tools ----------
@@ -91,9 +113,7 @@ def resolve_topic(
     return json.dumps(
         [
             {
-                "topic_id": t.topic_id, "title": t.title, "tags": t.tags,
-                "source_type": t.source_type, "domain": t.domain,
-                "trust_tier": t.trust_tier, "snippet": t.snippet,
+                **retriever.topic_record(t),
             }
             for t in topics
         ],
@@ -122,6 +142,32 @@ def get_docs(topic_id: str, query: str | None = None, tokens: int | None = None)
 
 
 @mcp.tool()
+def resolve_topic_json(
+    query: str, limit: int = 8,
+    domain: str | None = None, source_type: str | None = None, min_tier: int | None = None,
+) -> str:
+    """Structured variant of resolve_topic for agents that should not parse markdown."""
+    f = _filt(
+        domains=[domain] if domain else None,
+        source_types=[source_type] if source_type else None,
+        min_tier=min_tier,
+    )
+    topics = retriever.resolve_topic(_conn, cfg, query, limit=limit, filt=f)
+    return json.dumps(
+        [retriever.topic_record(topic) for topic in topics],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@mcp.tool()
+def get_docs_json(topic_id: str, query: str | None = None, tokens: int | None = None) -> str:
+    """Structured variant of get_docs with explicit citation metadata per chunk."""
+    hits = retriever.get_docs(_conn, cfg, topic_id, query, token_budget=tokens)
+    return _hits_json(hits)
+
+
+@mcp.tool()
 def search(
     query: str, tokens: int | None = None,
     tags: list[str] | None = None,
@@ -147,6 +193,66 @@ def search(
         token_budget=tokens,
     )
     return _render_hits(hits)
+
+
+@mcp.tool()
+def search_json(
+    query: str, tokens: int | None = None,
+    tags: list[str] | None = None,
+    source_types: list[str] | None = None,
+    domains: list[str] | None = None,
+    folders: list[str] | None = None,
+    min_tier: int | None = None,
+) -> str:
+    """Structured one-shot hybrid search with explicit citation metadata."""
+    hits = retriever.search(
+        _conn, cfg, query,
+        filt=_filt(tags=tags, source_types=source_types, domains=domains,
+                   folders=folders, min_tier=min_tier),
+        token_budget=tokens,
+    )
+    return _hits_json(hits)
+
+
+@mcp.tool()
+def smart_search(
+    query: str, tokens: int | None = None,
+    tags: list[str] | None = None,
+    source_types: list[str] | None = None,
+    domains: list[str] | None = None,
+    folders: list[str] | None = None,
+    min_tier: int | None = None,
+) -> str:
+    """
+    Expanded search. Uses deterministic query variants internally, then fuses results.
+    Prefer this when the agent is unsure whether plain search or multi_search fits.
+    """
+    hits = retriever.smart_search(
+        _conn, cfg, query,
+        filt=_filt(tags=tags, source_types=source_types, domains=domains,
+                   folders=folders, min_tier=min_tier),
+        token_budget=tokens,
+    )
+    return _render_hits(hits)
+
+
+@mcp.tool()
+def smart_search_json(
+    query: str, tokens: int | None = None,
+    tags: list[str] | None = None,
+    source_types: list[str] | None = None,
+    domains: list[str] | None = None,
+    folders: list[str] | None = None,
+    min_tier: int | None = None,
+) -> str:
+    """Structured expanded search with explicit citation metadata."""
+    hits = retriever.smart_search(
+        _conn, cfg, query,
+        filt=_filt(tags=tags, source_types=source_types, domains=domains,
+                   folders=folders, min_tier=min_tier),
+        token_budget=tokens,
+    )
+    return _hits_json(hits)
 
 
 @mcp.tool()
@@ -216,31 +322,20 @@ def sync() -> str:
 @mcp.tool()
 def stats() -> str:
     """Index health: doc/chunk counts, by-tier breakdown, model, config."""
-    n_docs = _conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"]
-    n_chunks = _conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
-    by_tier = {
-        r["trust_tier"]: r["n"]
-        for r in _conn.execute(
-            "SELECT trust_tier, COUNT(*) AS n FROM documents GROUP BY trust_tier"
-        )
-    }
-    by_source = {
-        r["source_type"]: r["n"]
-        for r in _conn.execute(
-            "SELECT source_type, COUNT(*) AS n FROM documents GROUP BY source_type"
-        )
-    }
-    return json.dumps({
-        "kb_root": str(cfg.kb_root),
-        "db_path": str(cfg.db_path),
-        "documents": n_docs,
-        "chunks": n_chunks,
-        "by_tier": by_tier,
-        "by_source_type": by_source,
-        "embed_model": cfg.embed_model,
-        "rerank_enabled": cfg.rerank_enabled,
-        "transport": cfg.transport,
-    }, indent=2)
+    return json.dumps(stats_module.collect(_conn, cfg), indent=2)
+
+
+@mcp.tool()
+def stats_json() -> str:
+    """Structured alias for stats."""
+    return stats()
+
+
+@mcp.tool()
+def doctor_json(stale_days: int = 180) -> str:
+    """Run KB quality checks: metadata, stale reviews, duplicate titles, chunks, wikilinks."""
+    report = doctor_module.run_doctor(cfg, stale_days=stale_days)
+    return json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
 
 
 # ---------- entrypoint ----------

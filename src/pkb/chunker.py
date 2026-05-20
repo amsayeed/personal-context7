@@ -45,6 +45,13 @@ def _tok_count(s: str) -> int:
     return len(_ENC.encode(s, disallowed_special=()))
 
 
+def _trim_to_tokens(s: str, limit: int) -> str:
+    ids = _ENC.encode(s, disallowed_special=())
+    if len(ids) <= limit:
+        return s
+    return _ENC.decode(ids[:limit]).strip()
+
+
 def _doc_id(rel_path: str) -> str:
     return hashlib.blake2b(rel_path.encode("utf-8"), digest_size=8).hexdigest()
 
@@ -61,6 +68,13 @@ class Chunk:
     domain: str               # 'data' | 'ai' | 'system-design' | 'arch-patterns' | 'unknown'
     trust_tier: int           # 0..3
     folder: str               # top-level folder name (proxy for category)
+    summary: str
+    aliases: list[str]
+    key_concepts: list[str]
+    canonical_for: list[str]
+    canonical_questions: list[str]
+    last_reviewed: str
+    freshness_status: str
     text: str
     n_tokens: int
     mtime: float
@@ -132,6 +146,18 @@ def _normalize_trust_tier(v) -> int:
     return _TIER_ALIASES.get(key, 1)
 
 
+def _normalize_list(v) -> list[str]:
+    if v is None:
+        return []
+    if isinstance(v, str):
+        raw = v.split(",")
+    elif isinstance(v, list):
+        raw = v
+    else:
+        raw = [v]
+    return [str(item).strip().lstrip("#") for item in raw if str(item).strip()]
+
+
 def _split_by_tokens(body: str, target: int, hard_max: int, overlap: int) -> list[str]:
     if _tok_count(body) <= hard_max:
         return [body]
@@ -185,7 +211,9 @@ def _split_by_tokens(body: str, target: int, hard_max: int, overlap: int) -> lis
     return out
 
 
-def chunk_file(path: Path, kb_root: Path, *, target: int, hard_max: int, overlap: int) -> list[Chunk]:
+def chunk_file(
+    path: Path, kb_root: Path, *, target: int, hard_max: int, overlap: int
+) -> list[Chunk]:
     rel = str(path.relative_to(kb_root).as_posix())
     raw = path.read_text(encoding="utf-8", errors="replace")
     post = frontmatter.loads(raw)
@@ -215,6 +243,13 @@ def chunk_file(path: Path, kb_root: Path, *, target: int, hard_max: int, overlap
     source_type = str(fm.get("source_type", "unknown")).lower()
     domain = str(fm.get("domain", "unknown")).lower()
     trust_tier = _normalize_trust_tier(fm.get("trust_tier", fm.get("tier")))
+    summary = str(fm.get("summary", "") or "").strip()
+    aliases = _normalize_list(fm.get("aliases"))
+    key_concepts = _normalize_list(fm.get("key_concepts", fm.get("concepts")))
+    canonical_for = _normalize_list(fm.get("canonical_for"))
+    canonical_questions = _normalize_list(fm.get("canonical_questions", fm.get("questions")))
+    last_reviewed = str(fm.get("last_reviewed", "") or "").strip()
+    freshness_status = str(fm.get("freshness_status", "") or "").strip().lower()
     rel_parts = Path(rel).parts
     folder = rel_parts[0] if len(rel_parts) > 1 else ""
 
@@ -223,6 +258,18 @@ def chunk_file(path: Path, kb_root: Path, *, target: int, hard_max: int, overlap
 
     h1_match = re.search(r"^#\s+(.+)$", body_text, re.MULTILINE)
     title = fm_title or (h1_match.group(1).strip() if h1_match else path.stem)
+    retrieval_hints = []
+    if summary:
+        retrieval_hints.append(f"Summary: {summary}")
+    if aliases:
+        retrieval_hints.append(f"Aliases: {', '.join(aliases)}")
+    if key_concepts:
+        retrieval_hints.append(f"Key concepts: {', '.join(key_concepts)}")
+    if canonical_for:
+        retrieval_hints.append(f"Canonical for: {', '.join(canonical_for)}")
+    if canonical_questions:
+        retrieval_hints.append(f"Canonical questions: {'; '.join(canonical_questions)}")
+    hint_text = _trim_to_tokens("\n".join(retrieval_hints), max(80, hard_max // 4))
 
     chunks: list[Chunk] = []
     ordinal = 0
@@ -231,8 +278,20 @@ def chunk_file(path: Path, kb_root: Path, *, target: int, hard_max: int, overlap
         if not body:
             continue
         heading_path = " > ".join(h[1] for h in sec.headings) or title
-        for piece in _split_by_tokens(body, target, hard_max, overlap):
-            text = f"{heading_path}\n\n{piece}".strip()
+        text_parts = [heading_path]
+        if hint_text:
+            text_parts.append(hint_text)
+        prefix = "\n\n".join(text_parts).strip()
+        prefix_tokens = _tok_count(prefix)
+        piece_target = max(80, target - prefix_tokens)
+        piece_hard_max = max(piece_target, hard_max - prefix_tokens)
+        piece_overlap = min(overlap, max(0, piece_hard_max - piece_target))
+        for piece in _split_by_tokens(
+            body, piece_target, piece_hard_max, piece_overlap
+        ):
+            text_parts = [prefix]
+            text_parts.append(piece)
+            text = "\n\n".join(text_parts).strip()
             chunks.append(
                 Chunk(
                     doc_id=did,
@@ -245,6 +304,13 @@ def chunk_file(path: Path, kb_root: Path, *, target: int, hard_max: int, overlap
                     domain=domain,
                     trust_tier=trust_tier,
                     folder=folder,
+                    summary=summary,
+                    aliases=list(aliases),
+                    key_concepts=list(key_concepts),
+                    canonical_for=list(canonical_for),
+                    canonical_questions=list(canonical_questions),
+                    last_reviewed=last_reviewed,
+                    freshness_status=freshness_status,
                     text=text,
                     n_tokens=_tok_count(text),
                     mtime=mtime,

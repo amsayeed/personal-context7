@@ -28,6 +28,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from . import config as cfg_module
+from . import stats as stats_module
 from . import store
 from .sync import sync_now
 
@@ -82,23 +83,7 @@ async def stats(_: Request) -> JSONResponse:
     cfg = cfg_module.load()
     conn = store.connect(cfg.db_path)
     store.init(conn, cfg.embed_dim)
-    n_docs = conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"]
-    n_chunks = conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
-    by_tier = {
-        r["trust_tier"]: r["n"]
-        for r in conn.execute(
-            "SELECT trust_tier, COUNT(*) AS n FROM documents GROUP BY trust_tier"
-        )
-    }
-    return JSONResponse({
-        "kb_root": str(cfg.kb_root),
-        "db_path": str(cfg.db_path),
-        "documents": n_docs,
-        "chunks": n_chunks,
-        "by_tier": by_tier,
-        "embed_model": cfg.embed_model,
-        "rerank_enabled": cfg.rerank_enabled,
-    })
+    return JSONResponse(stats_module.collect(conn, cfg))
 
 
 # --- app factory -----------------------------------------------------------

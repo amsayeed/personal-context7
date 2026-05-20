@@ -71,7 +71,7 @@ All recent MCP-supporting clients use the same shape: an SSE URL plus a `headers
 The default tool descriptions are decent, but adding a one-liner to the agent's system prompt sharpens behavior. Try something like:
 
 > When the user asks about architecture, data, AI, or system-design patterns,
-> prefer `pkb.search` over guessing. For comparative questions ("X vs Y"),
+> prefer `pkb.smart_search_json` over guessing. For comparative questions ("X vs Y"),
 > decompose into 2–4 sub-queries and call `pkb.multi_search`. For questions
 > phrased very differently than how the notes likely read, draft a 2-sentence
 > hypothetical answer first and call `pkb.hyde_search(query, hypothesis)`.
@@ -88,10 +88,14 @@ What's exposed via MCP:
 | `resolve_topic(query, limit, filters...)`     | "Which document covers X?" — returns candidate doc paths.        |
 | `get_docs(topic_id, query?, tokens?)`         | After resolve_topic, pull ranked chunks from one doc.            |
 | `search(query, ..., min_tier=2)`              | One-shot hybrid search. The workhorse.                           |
+| `smart_search(query, ..., min_tier=2)`        | Expanded search with deterministic query variants.               |
 | `multi_search(queries=[...])`                 | Comparative or compound questions. Pass 2–5 sub-queries.         |
 | `hyde_search(query, hypothesis)`              | Recall lift when the user's phrasing diverges from the notes.    |
+| `resolve_topic_json`, `get_docs_json`         | Structured citation metadata; preferred for agent pipelines.     |
+| `search_json`, `smart_search_json`            | Structured search payloads with text and metadata.               |
+| `doctor_json()`                               | KB hygiene report: metadata, stale reviews, chunks, wikilinks.   |
 | `sync()`                                      | Pull from git + re-index changed files.                          |
-| `stats()`                                     | Sanity check.                                                    |
+| `stats()` / `stats_json()`                    | Sanity check with freshness, git SHA, DB size, breakdowns.       |
 
 Filters available on every search tool: `tags`, `source_types`, `domains`, `folders`, `min_tier`.
 

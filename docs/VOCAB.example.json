@@ -1,0 +1,19 @@
+{
+  "domains": [
+    "data",
+    "ai",
+    "system-design",
+    "arch-patterns",
+    "engineering-management",
+    "unknown"
+  ],
+  "source_types": [
+    "own-note",
+    "book",
+    "paper",
+    "blog",
+    "adr",
+    "transcript",
+    "unknown"
+  ]
+}

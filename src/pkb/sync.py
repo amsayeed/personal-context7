@@ -97,18 +97,31 @@ def sync_now(cfg: Config) -> SyncResult:
         conn = store.connect(cfg.db_path)
         store.init(conn, cfg.embed_dim)
         from .chunker import walk_kb
+        paths = list(walk_kb(cfg.kb_root))
+        removed = indexer.remove_stale_docs(conn, cfg, paths, announce=False)
         candidates = []
-        for path in walk_kb(cfg.kb_root):
+        for path in paths:
             rel = str(path.relative_to(cfg.kb_root).as_posix())
             old = store.doc_mtime(conn, rel)
-            if old is None or path.stat().st_mtime > old + 1e-6:
+            old_version = store.doc_index_version(conn, rel)
+            if (
+                old is None
+                or path.stat().st_mtime > old + 1e-6
+                or (old_version or 0) < store.INDEX_VERSION
+            ):
                 candidates.append(path)
         if not candidates:
+            index_msg = "index: up-to-date"
+            if removed:
+                index_msg += f" ({removed} deleted files removed)"
             return SyncResult(ok=True, pulled=pulled, n_files=0, n_chunks=0,
-                              message="; ".join(msg_parts + ["index: up-to-date"]))
+                              message="; ".join(msg_parts + [index_msg]))
         nf, nc = indexer._index_files(conn, cfg, candidates, "Syncing")
+        index_msg = f"index: {nf} files / {nc} chunks"
+        if removed:
+            index_msg += f" ({removed} deleted files removed)"
         return SyncResult(ok=True, pulled=pulled, n_files=nf, n_chunks=nc,
-                          message="; ".join(msg_parts + [f"index: {nf} files / {nc} chunks"]))
+                          message="; ".join(msg_parts + [index_msg]))
     except Exception as e:
         return SyncResult(ok=False, pulled=pulled, n_files=0, n_chunks=0,
                           message=f"index step failed: {e}")

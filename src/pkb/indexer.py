@@ -90,6 +90,13 @@ def _index_files(conn, cfg: Config, paths: list[Path], label: str) -> tuple[int,
                         domain=head.domain,
                         trust_tier=head.trust_tier,
                         folder=head.folder,
+                        summary=head.summary,
+                        aliases=head.aliases,
+                        key_concepts=head.key_concepts,
+                        canonical_for=head.canonical_for,
+                        canonical_questions=head.canonical_questions,
+                        last_reviewed=head.last_reviewed,
+                        freshness_status=head.freshness_status,
                         mtime=head.mtime,
                         n_chunks=len(pairs),
                     )
@@ -112,6 +119,24 @@ def _index_files(conn, cfg: Config, paths: list[Path], label: str) -> tuple[int,
     return n_files, n_chunks
 
 
+def remove_stale_docs(conn, cfg: Config, paths: list[Path], *, announce: bool = True) -> int:
+    """Remove index rows for files that no longer exist under kb_root."""
+    rel_on_disk = {str(p.relative_to(cfg.kb_root).as_posix()) for p in paths}
+    stale = store.all_paths(conn) - rel_on_disk
+    if not stale:
+        return 0
+
+    if announce:
+        console.print(f"[yellow]Removing {len(stale)} deleted files from index[/yellow]")
+    with conn:
+        for rel in stale:
+            row = conn.execute("SELECT doc_id FROM documents WHERE path = ?", (rel,)).fetchone()
+            if row:
+                store.delete_doc_chunks(conn, row["doc_id"])
+                conn.execute("DELETE FROM documents WHERE doc_id = ?", (row["doc_id"],))
+    return len(stale)
+
+
 def build(cfg: Config) -> None:
     """Full reindex."""
     console.print(f"[bold]Indexing[/bold] {cfg.kb_root}  →  {cfg.db_path}")
@@ -122,19 +147,7 @@ def build(cfg: Config) -> None:
     store.init(conn, cfg.embed_dim)
 
     paths = list(walk_kb(cfg.kb_root))
-    rel_on_disk = {str(p.relative_to(cfg.kb_root).as_posix()) for p in paths}
-
-    # Drop docs that no longer exist on disk.
-    indexed = store.all_paths(conn)
-    stale = indexed - rel_on_disk
-    if stale:
-        console.print(f"[yellow]Removing {len(stale)} deleted files from index[/yellow]")
-        with conn:
-            for rel in stale:
-                row = conn.execute("SELECT doc_id FROM documents WHERE path = ?", (rel,)).fetchone()
-                if row:
-                    store.delete_doc_chunks(conn, row["doc_id"])
-                    conn.execute("DELETE FROM documents WHERE doc_id = ?", (row["doc_id"],))
+    remove_stale_docs(conn, cfg, paths)
 
     nf, nc = _index_files(conn, cfg, paths, "Indexing")
     console.print(f"[green]Done.[/green] {nf} files / {nc} chunks indexed.")
@@ -145,15 +158,24 @@ def sync(cfg: Config) -> None:
     conn = store.connect(cfg.db_path)
     store.init(conn, cfg.embed_dim)
 
+    paths = list(walk_kb(cfg.kb_root))
+    removed = remove_stale_docs(conn, cfg, paths)
+
     to_index: list[Path] = []
-    for path in walk_kb(cfg.kb_root):
+    for path in paths:
         rel = str(path.relative_to(cfg.kb_root).as_posix())
         old_mtime = store.doc_mtime(conn, rel)
-        if old_mtime is None or path.stat().st_mtime > old_mtime + 1e-6:
+        old_version = store.doc_index_version(conn, rel)
+        if (
+            old_mtime is None
+            or path.stat().st_mtime > old_mtime + 1e-6
+            or (old_version or 0) < store.INDEX_VERSION
+        ):
             to_index.append(path)
 
     if not to_index:
-        console.print("[green]Index up-to-date.[/green]")
+        suffix = f" Removed {removed} deleted files." if removed else ""
+        console.print(f"[green]Index up-to-date.[/green]{suffix}")
         return
 
     nf, nc = _index_files(conn, cfg, to_index, "Syncing")
