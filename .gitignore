@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal
+.fastembed_cache/
+.DS_Store
+*.egg-info/
+dist/
+build/
+.env
