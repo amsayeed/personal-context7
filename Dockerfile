@@ -36,15 +36,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PKB_CACHE_DIR=/data/.fastembed_cache
 
 # git: needed at runtime to pull the KB repo on boot + on /webhook/sync.
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+# gosu: lets the entrypoint repair Railway volume ownership before dropping privileges.
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates gosu \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 pkb
 
 COPY --from=builder /opt/venv /opt/venv
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Persistent volume mount target on Railway.
-RUN mkdir -p /data && chown -R pkb:pkb /data
-USER pkb
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
+    && mkdir -p /data \
+    && chown -R pkb:pkb /data
 WORKDIR /home/pkb
 
 EXPOSE 8000
@@ -54,4 +57,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -m pkb.healthcheck || exit 1
 
 # pkb-mcp reads PORT from env (Railway sets it) — uvicorn binds 0.0.0.0:$PORT.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["pkb-mcp"]

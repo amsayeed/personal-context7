@@ -12,6 +12,7 @@ next sync re-does the files that didn't finish. SQLite writes are transactional.
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,8 @@ from . import indexer, store
 from .config import Config
 
 log = logging.getLogger("pkb.sync")
+_URL_AUTH_RE = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<auth>[^@\s/]+)@")
+_SCP_AUTH_RE = re.compile(r"(?<!\S)(?P<auth>[^@\s]+)@(?P<host>[^:\s]+):")
 
 
 @dataclass
@@ -32,10 +35,12 @@ class SyncResult:
 
 
 def _run(cmd: list[str], cwd: Path | None = None) -> str:
-    log.info("$ %s%s", " ".join(cmd), f"  (cwd={cwd})" if cwd else "")
+    safe_cmd = _safe_cmd(cmd)
+    log.info("$ %s%s", safe_cmd, f"  (cwd={cwd})" if cwd else "")
     res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
     if res.returncode != 0:
-        raise RuntimeError(f"command failed: {' '.join(cmd)}\nstderr: {res.stderr.strip()}")
+        stderr = _redact_secrets(res.stderr.strip())
+        raise RuntimeError(f"command failed: {safe_cmd}\nstderr: {stderr}")
     return res.stdout.strip()
 
 
@@ -129,8 +134,17 @@ def sync_now(cfg: Config) -> SyncResult:
 
 def _safe_remote(url: str) -> str:
     """Redact tokens in URLs like https://x:TOKEN@github.com/owner/repo.git for logs."""
-    if "@" not in url:
-        return url
-    proto, rest = url.split("://", 1) if "://" in url else ("", url)
-    auth, host = rest.split("@", 1)
-    return f"{proto}://<redacted>@{host}" if proto else f"<redacted>@{host}"
+    return _redact_secrets(url)
+
+
+def _safe_cmd(cmd: list[str]) -> str:
+    """Return a printable shell command with credential-bearing URLs redacted."""
+    return " ".join(_redact_secrets(part) for part in cmd)
+
+
+def _redact_secrets(text: str) -> str:
+    """Redact auth embedded in URL-like strings without touching unrelated text."""
+    if "@" not in text:
+        return text
+    text = _URL_AUTH_RE.sub(r"\g<scheme><redacted>@", text)
+    return _SCP_AUTH_RE.sub(r"<redacted>@\g<host>:", text)
