@@ -37,6 +37,20 @@ Use this for trend tracking and retrieval tuning. It covers more ambiguous
 questions than the smoke fixture, so treat failures as tuning leads rather than
 automatic deploy blockers.
 
+For a curated fixture, a 99% target effectively means every case must pass when
+the fixture has fewer than 100 questions. Fix misses by improving retrieval
+signals, not by weakening expected sources. The normal loop is:
+
+1. inspect the failed row's `returned_sources`
+2. confirm the expected document really answers the question
+3. add or improve `aliases`, `key_concepts`, `canonical_for`, and
+   `canonical_questions` on that document
+4. run `pkb sync` so the metadata is embedded and indexed
+5. rerun the fixture with `--min-recall 0.99`
+
+This matches contextual retrieval practice: chapter titles, summaries, and
+canonical questions should be searchable evidence for both BM25 and embeddings.
+
 Metrics:
 
 - `recall_at_k`: at least one expected source appeared in top `k`.

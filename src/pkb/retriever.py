@@ -150,6 +150,26 @@ def _apply_query_metadata_boost(hits: list[Hit], query: str) -> list[Hit]:
     return sorted(hits, key=lambda h: h.score, reverse=True)
 
 
+def _rerank_document_text(h: Hit) -> str:
+    """Expose document identity to the reranker, not just local chunk prose."""
+    parts = [
+        f"Title: {h.title}",
+        f"Heading: {h.heading_path}",
+    ]
+    if h.summary:
+        parts.append(f"Summary: {h.summary}")
+    if h.aliases:
+        parts.append(f"Aliases: {', '.join(h.aliases)}")
+    if h.key_concepts:
+        parts.append(f"Key concepts: {', '.join(h.key_concepts)}")
+    if h.canonical_for:
+        parts.append(f"Canonical for: {', '.join(h.canonical_for)}")
+    if h.canonical_questions:
+        parts.append(f"Canonical questions: {'; '.join(h.canonical_questions)}")
+    parts.append(h.text)
+    return "\n".join(parts)
+
+
 @lru_cache(maxsize=2)
 def _cross_encoder(model_name: str, cache_dir: str):
     from fastembed.rerank.cross_encoder import TextCrossEncoder
@@ -164,7 +184,7 @@ def _maybe_rerank(query: str, hits: list[Hit], cfg: Config) -> list[Hit]:
         ce = _cross_encoder(cfg.rerank_model, str(cfg.cache_dir))
     except Exception:
         return hits  # fail open: rerank lib/model not present
-    scores = list(ce.rerank(query, [h.text for h in hits]))
+    scores = list(ce.rerank(query, [_rerank_document_text(h) for h in hits]))
     prior_scores = [h.score for h in hits]
     ce_scores = [float(s) for s in scores]
 
@@ -184,13 +204,32 @@ def _maybe_rerank(query: str, hits: list[Hit], cfg: Config) -> list[Hit]:
     return sorted(hits, key=lambda h: h.score, reverse=True)
 
 
-def _budget(hits: list[Hit], token_budget: int) -> list[Hit]:
-    out, spent = [], 0
-    for h in hits:
+def _budget(hits: list[Hit], token_budget: int, *, diversify_docs: bool = False) -> list[Hit]:
+    out: list[Hit] = []
+    spent = 0
+    seen_chunks: set[str] = set()
+
+    def add(h: Hit) -> bool:
+        nonlocal spent
+        if h.chunk_id in seen_chunks:
+            return False
         if spent + h.n_tokens > token_budget and out:
-            break
+            return False
         out.append(h)
+        seen_chunks.add(h.chunk_id)
         spent += h.n_tokens
+        return True
+
+    if diversify_docs:
+        seen_paths: set[str] = set()
+        for h in hits:
+            if h.path in seen_paths:
+                continue
+            if add(h):
+                seen_paths.add(h.path)
+
+    for h in hits:
+        add(h)
     return out
 
 
@@ -256,7 +295,7 @@ def search(
     boosted = _apply_query_metadata_boost(_apply_tier_boost(fused, cfg), query)
     top = boosted[: max(cfg.final_topk * 3, 30)]
     reranked = _maybe_rerank(query, top, cfg)
-    return _budget(reranked[: cfg.final_topk], budget)
+    return _budget(reranked[: cfg.final_topk], budget, diversify_docs=True)
 
 
 def multi_search(
@@ -297,7 +336,7 @@ def multi_search(
     boosted = _apply_query_metadata_boost(_apply_tier_boost(fused, cfg), joined)
     top = boosted[: max(cfg.final_topk * 3, 30)]
     reranked = _maybe_rerank(joined, top, cfg)
-    return _budget(reranked[: cfg.final_topk], budget)
+    return _budget(reranked[: cfg.final_topk], budget, diversify_docs=True)
 
 
 def _query_variants(query: str) -> list[str]:
@@ -389,7 +428,7 @@ def hyde_search(
     boosted = _apply_query_metadata_boost(_apply_tier_boost(fused, cfg), query)
     top = boosted[: max(cfg.final_topk * 3, 30)]
     reranked = _maybe_rerank(query, top, cfg)  # rerank uses the original query
-    return _budget(reranked[: cfg.final_topk], budget)
+    return _budget(reranked[: cfg.final_topk], budget, diversify_docs=True)
 
 
 # ---------- topic-style helpers (Context7 UX) ----------
