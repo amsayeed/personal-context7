@@ -145,6 +145,38 @@ def delete_doc(cfg: Config, doc_id: str) -> None:
     )
 
 
+def delete_doc_except(cfg: Config, doc_id: str, keep_chunk_ids: Iterable[str]) -> None:
+    """Delete Qdrant points for a document except the current chunk IDs."""
+    keep = [str(chunk_id) for chunk_id in keep_chunk_ids if str(chunk_id)]
+    if not keep:
+        delete_doc(cfg, doc_id)
+        return
+    if not enabled(cfg):
+        return
+    _, models = _require_client()
+    ensure_collection(cfg)
+    client(cfg).delete(
+        collection_name=cfg.qdrant_collection,
+        points_selector=models.FilterSelector(
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="doc_id",
+                        match=models.MatchValue(value=doc_id),
+                    )
+                ],
+                must_not=[
+                    models.FieldCondition(
+                        key="chunk_id",
+                        match=models.MatchAny(any=keep),
+                    )
+                ],
+            )
+        ),
+        wait=True,
+    )
+
+
 def upsert_chunks(
     cfg: Config,
     chunks: Sequence[Chunk],
@@ -183,6 +215,19 @@ def upsert_chunks(
         points=points,
         wait=True,
     )
+
+
+def replace_doc(
+    cfg: Config,
+    doc_id: str,
+    chunks: Sequence[Chunk],
+    embeddings: Sequence[Sequence[float]],
+) -> None:
+    """Replace a document's Qdrant points without creating a delete-before-upsert gap."""
+    if not enabled(cfg):
+        return
+    upsert_chunks(cfg, chunks, embeddings)
+    delete_doc_except(cfg, doc_id, (chunk.chunk_id for chunk in chunks))
 
 
 def _match_any(models, values: Iterable[str]):
@@ -284,7 +329,9 @@ def vec_search(
         if not row:
             continue
         item = {key: row[key] for key in row.keys()}
-        item["distance"] = 1.0 - scores.get(chunk_id, 0.0)
+        vector_score = scores.get(chunk_id, 0.0)
+        item["vector_score"] = vector_score
+        item["distance"] = 1.0 - vector_score
         hydrated.append(item)
     return hydrated
 

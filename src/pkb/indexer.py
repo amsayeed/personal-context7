@@ -120,10 +120,12 @@ def _index_files(conn, cfg: Config, paths: list[Path], label: str) -> tuple[int,
                         )
                     )
 
-            if qdrant_store.enabled(cfg):
+                # Qdrant is updated before the SQLite transaction commits. If the
+                # process dies here, SQLite still has the old mtime and the next
+                # sync retries. replace_doc upserts before deleting stale points,
+                # so there is no delete-before-upsert gap in production retrieval.
                 for doc_id, chunks, vectors in qdrant_batches:
-                    qdrant_store.delete_doc(cfg, doc_id)
-                    qdrant_store.upsert_chunks(cfg, chunks, vectors)
+                    qdrant_store.replace_doc(cfg, doc_id, chunks, vectors)
 
             n_files += len(file_batch)
             n_chunks += len(all_chunks)

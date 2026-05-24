@@ -206,7 +206,7 @@ Generate a fine-grained personal-access token with `Contents: read` on the notes
 Three reasonable patterns; pick one:
 
 1. **Manual after writing.** `git push` from your laptop, then `curl -X POST .../webhook/sync` to trigger reindex on the server. Most control, slowest.
-2. **GitHub Action on push.** Add a workflow that POSTs to `/webhook/sync` whenever you push to `main`. Set-and-forget.
+2. **GitHub Action on push.** Add a workflow that POSTs to `/webhook/sync` with the bearer header whenever you push to `main`. Set-and-forget.
 3. **Cron on the server.** A scheduled hourly `/webhook/sync` call. Lazy but works. The `pkb` index is incremental so this is cheap.
 
 A GitHub Action example lives in `docs/AGENT_INTEGRATION.md`.

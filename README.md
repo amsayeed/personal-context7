@@ -7,7 +7,7 @@ Obsidian vault
    │  git push
    ▼
 GitHub (private repo)
-   │  /webhook/sync       (or GitHub Action on push)
+   │  GitHub Action POST /webhook/sync
    ▼
 Railway service  ──►  pulls KB  ──►  pkb sync (incremental)
    │                                      ├── kb.db (metadata + FTS5/BM25)
@@ -21,7 +21,7 @@ your agents (Claude Code, Cowork, Cursor, …)
 
 - **Hybrid retrieval** — BM25 (FTS5) + dense (`Qdrant` or `sqlite-vec` + `BAAI/bge-small-en-v1.5`) fused with Reciprocal Rank Fusion (k=60).
 - **Metadata-aware ranking** — `trust_tier` soft-boosts your own synthesis over raw highlights over archive.
-- **Cross-encoder rerank** — on by default; ~150ms latency, big quality lift.
+- **Cross-encoder rerank** — on by default, model-cached in process, big quality lift.
 - **Decision evidence** — `decision_evidence_json` retrieves and packages evidence for architecture decisions across books.
 - **Multi-hop** — `multi_search_json` for comparative questions; legacy/full profile still exposes HyDE.
 - **Context7-style metadata** — summaries, aliases, canonical topics/questions, freshness, and JSON citation payloads.

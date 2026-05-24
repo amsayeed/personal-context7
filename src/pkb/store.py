@@ -9,6 +9,7 @@ and the soft-boost rerank in retriever.py.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import struct
 from pathlib import Path
@@ -119,6 +120,15 @@ def init(conn: sqlite3.Connection, embed_dim: int) -> None:
 
 def f32_blob(vec: Sequence[float]) -> bytes:
     return struct.pack(f"{len(vec)}f", *vec)
+
+
+def f32_list(raw) -> list[float]:
+    if isinstance(raw, memoryview):
+        raw = raw.tobytes()
+    elif not isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw)
+    dim = len(raw) // 4
+    return list(struct.unpack(f"{dim}f", raw))
 
 
 # ---------- writes ----------
@@ -270,13 +280,24 @@ def chunks_by_ids(conn: sqlite3.Connection, chunk_ids: Sequence[str]) -> dict[st
     return {row["chunk_id"]: row for row in rows}
 
 
-def _fts_query(q: str) -> str:
-    """Sanitize free-text for FTS5 — strip operator chars, OR each token, prefix-expand."""
+def _fts_terms(q: str) -> list[str]:
+    """Sanitize free text for FTS5 and return prefix-searchable terms."""
     safe = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in q)
-    terms = [t for t in safe.split() if t]
+    return [t for t in safe.split() if t]
+
+
+def _fts_query(q: str, *, operator: str = "AND") -> str:
+    """Build an FTS5 query from sanitized terms.
+
+    AND is the precision-oriented default for BM25. OR is used only as a fallback
+    to fill candidate slots when the stricter query is too narrow.
+    """
+    terms = _fts_terms(q)
     if not terms:
         return '""'
-    return " OR ".join(f"{t}*" for t in terms)
+    if operator.upper() == "OR":
+        return " OR ".join(f"{t}*" for t in terms)
+    return " ".join(f"{t}*" for t in terms)
 
 
 def _build_filters(
@@ -316,9 +337,9 @@ def _build_filters(
     return sql
 
 
-def bm25_search(
+def _bm25_search_once(
     conn: sqlite3.Connection,
-    query: str,
+    fts_query: str,
     k: int,
     *,
     paths: Iterable[str] | None = None,
@@ -340,12 +361,96 @@ def bm25_search(
     JOIN documents d ON d.doc_id = c.doc_id
     WHERE chunks_fts MATCH ?
     """
-    params: list = [_fts_query(query)]
+    params: list = [fts_query]
     sql = _build_filters(sql, params, paths=paths, tags=tags, source_types=source_types,
                          domains=domains, folders=folders, min_tier=min_tier)
     sql += " ORDER BY score DESC LIMIT ?"
     params.append(k)
     return conn.execute(sql, params).fetchall()
+
+
+def bm25_search(
+    conn: sqlite3.Connection,
+    query: str,
+    k: int,
+    *,
+    paths: Iterable[str] | None = None,
+    tags: Iterable[str] | None = None,
+    source_types: Iterable[str] | None = None,
+    domains: Iterable[str] | None = None,
+    folders: Iterable[str] | None = None,
+    min_tier: int | None = None,
+) -> list[sqlite3.Row]:
+    fkw = dict(
+        paths=paths,
+        tags=tags,
+        source_types=source_types,
+        domains=domains,
+        folders=folders,
+        min_tier=min_tier,
+    )
+    strict = _bm25_search_once(conn, _fts_query(query), k, **fkw)
+    if len(strict) >= k or not _fts_terms(query):
+        return strict
+
+    fallback = _bm25_search_once(conn, _fts_query(query, operator="OR"), k, **fkw)
+    seen = {row["chunk_id"] for row in strict}
+    out = list(strict)
+    for row in fallback:
+        if row["chunk_id"] in seen:
+            continue
+        out.append(row)
+        seen.add(row["chunk_id"])
+        if len(out) >= k:
+            break
+    return out
+
+
+def _l2_distance(a: Sequence[float], b: Sequence[float]) -> float:
+    return math.sqrt(sum((left - right) ** 2 for left, right in zip(a, b)))
+
+
+def _exact_vec_search_filtered(
+    conn: sqlite3.Connection,
+    embedding: Sequence[float],
+    k: int,
+    *,
+    paths: Iterable[str] | None,
+    tags: Iterable[str] | None,
+    source_types: Iterable[str] | None,
+    domains: Iterable[str] | None,
+    folders: Iterable[str] | None,
+    min_tier: int | None,
+) -> list[dict]:
+    """Exact vector search over a pre-filtered candidate set.
+
+    sqlite-vec applies normal SQL predicates after the ANN top-k. For path-scoped
+    queries, over-fetching the entire collection was correct but expensive. A
+    direct scan over the selected document chunks is smaller and deterministic.
+    """
+    sql = """
+    SELECT
+        c.chunk_id, d.path, d.title, c.heading_path, c.text, c.n_tokens,
+        d.source_type, d.domain, d.trust_tier, d.folder,
+        d.summary, d.aliases_json, d.key_concepts_json, d.canonical_for_json,
+        d.canonical_questions_json, d.last_reviewed, d.freshness_status,
+        v.embedding AS embedding
+    FROM chunks_vec v
+    JOIN chunks    c ON c.rowid = v.chunk_rowid
+    JOIN documents d ON d.doc_id = c.doc_id
+    WHERE 1 = 1
+    """
+    params: list = []
+    sql = _build_filters(sql, params, paths=paths, tags=tags, source_types=source_types,
+                         domains=domains, folders=folders, min_tier=min_tier)
+    rows = conn.execute(sql, params).fetchall()
+    ranked: list[dict] = []
+    for row in rows:
+        item = {key: row[key] for key in row.keys() if key != "embedding"}
+        item["distance"] = _l2_distance(embedding, f32_list(row["embedding"]))
+        ranked.append(item)
+    ranked.sort(key=lambda item: item["distance"])
+    return ranked[:k]
 
 
 def vec_search(
@@ -359,17 +464,21 @@ def vec_search(
     domains: Iterable[str] | None = None,
     folders: Iterable[str] | None = None,
     min_tier: int | None = None,
-) -> list[sqlite3.Row]:
-    """
-    KNN over sqlite-vec, then filter by metadata in SQL.
-
-    Note: we over-fetch from vec0 (k * 3) when filters are present so we still
-    have ~k passing the filter. Cheap.
-    """
+) -> list[sqlite3.Row | dict]:
+    """KNN over sqlite-vec, then filter by metadata in SQL."""
     if paths:
-        row = conn.execute("SELECT COUNT(*) AS n FROM chunks_vec").fetchone()
-        overfetch = max(k, int(row["n"] or 0))
-    elif any([tags, source_types, domains, folders, min_tier is not None]):
+        return _exact_vec_search_filtered(
+            conn,
+            embedding,
+            k,
+            paths=paths,
+            tags=tags,
+            source_types=source_types,
+            domains=domains,
+            folders=folders,
+            min_tier=min_tier,
+        )
+    if any([tags, source_types, domains, folders, min_tier is not None]):
         overfetch = k * 3
     else:
         overfetch = k

@@ -14,7 +14,7 @@ Below: how to plug it into the agents you actually use, plus the GitHub Action t
 | `/healthz`       | GET    | none | Liveness check.                                                        |
 | `/sse`           | —      | bearer | MCP Server-Sent-Events transport. Where agents connect.              |
 | `/messages`      | POST   | bearer | MCP client→server messages. Mounted alongside `/sse`.                |
-| `/webhook/sync`  | POST   | bearer | Trigger `git pull` + incremental reindex.                              |
+| `/webhook/sync`  | POST   | bearer | Trigger `git pull` + incremental reindex. Use a GitHub Action or cron that can send the bearer header. |
 | `/stats`         | GET    | bearer | JSON: doc/chunk counts, tier breakdown.                                |
 
 ## MCP clients

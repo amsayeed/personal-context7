@@ -22,6 +22,7 @@ import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Iterable
 
 from .config import Config
@@ -149,14 +150,20 @@ def _apply_query_metadata_boost(hits: list[Hit], query: str) -> list[Hit]:
     return sorted(hits, key=lambda h: h.score, reverse=True)
 
 
+@lru_cache(maxsize=2)
+def _cross_encoder(model_name: str, cache_dir: str):
+    from fastembed.rerank.cross_encoder import TextCrossEncoder
+
+    return TextCrossEncoder(model_name=model_name, cache_dir=cache_dir)
+
+
 def _maybe_rerank(query: str, hits: list[Hit], cfg: Config) -> list[Hit]:
     if not cfg.rerank_enabled or not hits:
         return hits
     try:
-        from fastembed.rerank.cross_encoder import TextCrossEncoder
+        ce = _cross_encoder(cfg.rerank_model, str(cfg.cache_dir))
     except Exception:
-        return hits  # fail open: rerank lib not present
-    ce = TextCrossEncoder(model_name=cfg.rerank_model, cache_dir=str(cfg.cache_dir))
+        return hits  # fail open: rerank lib/model not present
     scores = list(ce.rerank(query, [h.text for h in hits]))
     prior_scores = [h.score for h in hits]
     ce_scores = [float(s) for s in scores]
