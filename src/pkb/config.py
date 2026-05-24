@@ -81,6 +81,15 @@ class Config:
     # --- MCP tool exposure
     mcp_profile: str               # "agent" | "admin" | "legacy" | "full"
 
+    # --- Braintrust observability/evals
+    braintrust_enabled: bool
+    braintrust_api_key: str | None
+    braintrust_project_id: str | None
+    braintrust_project: str | None
+    braintrust_sample_rate: float
+    braintrust_log_text: bool
+    braintrust_text_max_chars: int
+
     @property
     def tier_boost(self) -> dict[int, float]:
         return {
@@ -135,4 +144,11 @@ def load() -> Config:
         kb_git_branch=os.environ.get("PKB_KB_GIT_BRANCH", "main"),
         require_metadata=_env_bool("PKB_REQUIRE_METADATA", False),
         mcp_profile=os.environ.get("PKB_MCP_PROFILE", "agent").lower(),
+        braintrust_enabled=_env_bool("PKB_BRAINTRUST_ENABLED", False),
+        braintrust_api_key=os.environ.get("BRAINTRUST_API_KEY"),
+        braintrust_project_id=os.environ.get("BRAINTRUST_PROJECT_ID"),
+        braintrust_project=os.environ.get("BRAINTRUST_PROJECT", "personal-context7"),
+        braintrust_sample_rate=_env_float("PKB_BRAINTRUST_SAMPLE_RATE", 1.0),
+        braintrust_log_text=_env_bool("PKB_BRAINTRUST_LOG_TEXT", False),
+        braintrust_text_max_chars=_env_int("PKB_BRAINTRUST_TEXT_MAX_CHARS", 500),
     )

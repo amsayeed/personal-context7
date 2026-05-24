@@ -56,5 +56,9 @@ def collect(conn, cfg: Config) -> dict:
         "rerank_enabled": cfg.rerank_enabled,
         "rerank_model": cfg.rerank_model,
         "mcp_profile": cfg.mcp_profile,
+        "braintrust_enabled": cfg.braintrust_enabled,
+        "braintrust_project_id": cfg.braintrust_project_id,
+        "braintrust_sample_rate": cfg.braintrust_sample_rate,
+        "braintrust_log_text": cfg.braintrust_log_text,
         "transport": cfg.transport,
     }

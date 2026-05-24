@@ -19,7 +19,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import config as cfg_module
+from . import braintrust_obs, config as cfg_module
 from . import doctor as doctor_module
 from . import evals as evals_module
 from . import indexer, ingest, qdrant_store, retriever, stats as stats_module, store
@@ -363,6 +363,11 @@ def eval_command(
     k: int = typer.Option(10, "--k"),
     min_recall: float = typer.Option(1.0, "--min-recall", min=0.0, max=1.0),
     min_mrr: float = typer.Option(0.0, "--min-mrr", min=0.0, max=1.0),
+    log_braintrust: bool = typer.Option(
+        True,
+        "--braintrust/--no-braintrust",
+        help="Log aggregate eval results to Braintrust when configured.",
+    ),
     output: Optional[Path] = typer.Option(
         None,
         "--output",
@@ -371,8 +376,9 @@ def eval_command(
     ),
 ) -> None:
     """Run retrieval evals from JSONL fixtures."""
+    cfg = cfg_module.load()
     report = evals_module.run_eval(
-        cfg_module.load(),
+        cfg,
         eval_path,
         k=k,
         min_recall=min_recall,
@@ -383,6 +389,15 @@ def eval_command(
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     console.print_json(json.dumps(payload))
+    if log_braintrust:
+        braintrust_obs.log_eval_report(
+            cfg,
+            eval_path=eval_path,
+            report=report,
+            min_recall=min_recall,
+            min_mrr=min_mrr,
+        )
+        braintrust_obs.flush()
     if not report.ok:
         raise typer.Exit(1)
 

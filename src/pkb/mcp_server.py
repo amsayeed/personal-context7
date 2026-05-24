@@ -23,13 +23,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+from time import perf_counter
 from threading import Thread
 from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import config as cfg_module
+from . import braintrust_obs, config as cfg_module
 from . import doctor as doctor_module
 from . import retriever, stats as stats_module, store
 from .chunker import walk_kb
@@ -171,6 +172,10 @@ def _hits_json(hits) -> str:
     return json.dumps([retriever.hit_record(hit) for hit in hits], ensure_ascii=False, indent=2)
 
 
+def _elapsed_ms(start: float) -> float:
+    return round((perf_counter() - start) * 1000, 2)
+
+
 # ---------- tools ----------
 
 @pkb_tool("legacy")
@@ -227,12 +232,22 @@ def resolve_topic_json(
     domain: str | None = None, source_type: str | None = None, min_tier: int | None = None,
 ) -> str:
     """Structured variant of resolve_topic for agents that should not parse markdown."""
+    start = perf_counter()
     f = _filt(
         domains=[domain] if domain else None,
         source_types=[source_type] if source_type else None,
         min_tier=min_tier,
     )
     topics = retriever.resolve_topic(_conn, cfg, query, limit=limit, filt=f)
+    braintrust_obs.log_topic_resolution(
+        cfg,
+        tool="resolve_topic_json",
+        query=query,
+        topics=topics,
+        filters=f,
+        limit=limit,
+        elapsed_ms=_elapsed_ms(start),
+    )
     return json.dumps(
         [retriever.topic_record(topic) for topic in topics],
         ensure_ascii=False,
@@ -243,7 +258,18 @@ def resolve_topic_json(
 @pkb_tool("agent", "legacy")
 def get_docs_json(topic_id: str, query: str | None = None, tokens: int | None = None) -> str:
     """Structured variant of get_docs with explicit citation metadata per chunk."""
+    start = perf_counter()
     hits = retriever.get_docs(_conn, cfg, topic_id, query, token_budget=tokens)
+    braintrust_obs.log_retrieval(
+        cfg,
+        tool="get_docs_json",
+        query=query or topic_id,
+        hits=hits,
+        filters=Filters(paths=[topic_id]),
+        token_budget=tokens,
+        elapsed_ms=_elapsed_ms(start),
+        extra={"topic_id": topic_id},
+    )
     return _hits_json(hits)
 
 
@@ -261,13 +287,24 @@ def retrieve_json(
     Default retrieval tool for agents. Uses expanded hybrid retrieval
     (BM25 + vector + RRF + rerank) and returns structured citation records.
     """
+    start = perf_counter()
+    f = _filt(tags=tags, source_types=source_types, domains=domains,
+              folders=folders, min_tier=min_tier)
     hits = retriever.smart_search(
         _conn,
         cfg,
         query,
-        filt=_filt(tags=tags, source_types=source_types, domains=domains,
-                   folders=folders, min_tier=min_tier),
+        filt=f,
         token_budget=tokens,
+    )
+    braintrust_obs.log_retrieval(
+        cfg,
+        tool="retrieve_json",
+        query=query,
+        hits=hits,
+        filters=f,
+        token_budget=tokens,
+        elapsed_ms=_elapsed_ms(start),
     )
     return _hits_json(hits)
 
@@ -399,13 +436,24 @@ def multi_search_json(
     Structured multi-query retrieval. Use for comparative or compound questions
     after decomposing the user request into 2-5 focused sub-queries.
     """
+    start = perf_counter()
+    f = _filt(tags=tags, source_types=source_types, domains=domains,
+              folders=folders, min_tier=min_tier)
     hits = retriever.multi_search(
         _conn,
         cfg,
         queries,
-        filt=_filt(tags=tags, source_types=source_types, domains=domains,
-                   folders=folders, min_tier=min_tier),
+        filt=f,
         token_budget=tokens,
+    )
+    braintrust_obs.log_retrieval(
+        cfg,
+        tool="multi_search_json",
+        queries=queries,
+        hits=hits,
+        filters=f,
+        token_budget=tokens,
+        elapsed_ms=_elapsed_ms(start),
     )
     return _hits_json(hits)
 
@@ -431,13 +479,15 @@ def decision_evidence_json(
             f"{question} {option} tradeoffs failure modes when to use"
             for option in options
         )
+    start = perf_counter()
+    f = _filt(source_types=source_types, domains=domains,
+              folders=folders, min_tier=min_tier)
     hits = (
         retriever.multi_search(
             _conn,
             cfg,
             queries,
-            filt=_filt(source_types=source_types, domains=domains,
-                       folders=folders, min_tier=min_tier),
+            filt=f,
             token_budget=tokens,
         )
         if len(queries) > 1
@@ -445,10 +495,20 @@ def decision_evidence_json(
             _conn,
             cfg,
             question,
-            filt=_filt(source_types=source_types, domains=domains,
-                       folders=folders, min_tier=min_tier),
+            filt=f,
             token_budget=tokens,
         )
+    )
+    braintrust_obs.log_retrieval(
+        cfg,
+        tool="decision_evidence_json",
+        query=question,
+        queries=queries,
+        hits=hits,
+        filters=f,
+        token_budget=tokens,
+        elapsed_ms=_elapsed_ms(start),
+        extra={"options": options or []},
     )
     records = [retriever.hit_record(hit) for hit in hits]
     sources = []

@@ -47,6 +47,16 @@ Why Braintrust:
 Keep local deterministic retrieval evals as the source of truth for retrieval regressions.
 Use Braintrust for history, dashboards, model comparisons, and judged answer quality.
 
+This repo logs `pkb eval` aggregate results to Braintrust when these variables are set:
+
+```bash
+BRAINTRUST_API_KEY=...
+BRAINTRUST_PROJECT_ID=...
+PKB_BRAINTRUST_ENABLED=true
+```
+
+Use `--no-braintrust` for a local-only run.
+
 ## Decision Evals
 
 For architecture decisions, retrieval recall is not enough. Add cases that test whether

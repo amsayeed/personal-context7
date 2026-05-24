@@ -26,6 +26,7 @@ your agents (Claude Code, Cowork, Cursor, …)
 - **Multi-hop** — `multi_search_json` for comparative questions; legacy/full profile still exposes HyDE.
 - **Context7-style metadata** — summaries, aliases, canonical topics/questions, freshness, and JSON citation payloads.
 - **Quality loop** — `pkb doctor` for vault hygiene and `pkb eval` for retrieval recall/MRR/source/term coverage fixtures.
+- **Braintrust integration** — optional sanitized MCP retrieval tracing and eval score logging.
 - **Hard filters** — by `tags`, `source_type`, `domain`, `folder`, `min_tier`.
 - **Two transports** — stdio (local) or SSE (hosted) over the same code, same tool set.
 - **Git-backed KB** — clones a private repo on boot, pulls on `/webhook/sync` or via the `sync` MCP tool.
@@ -94,6 +95,10 @@ See `docs/AGENT_INTEGRATION.md`. SSE URL + bearer header is all most MCP clients
 | `PKB_FINAL_TOPK`        | `12`                          | Hits returned to the agent.                      |
 | `PKB_TOKEN_BUDGET`      | `4000`                        | Default `tokens` for retrieval tools.            |
 | `PKB_MCP_PROFILE`       | `agent`                       | `agent`, `admin`, `legacy`, or `full`.           |
+| `PKB_BRAINTRUST_ENABLED`| `false`                       | Enable sanitized Braintrust tracing/eval logging.|
+| `BRAINTRUST_PROJECT_ID` | —                             | Stable Braintrust project ID.                    |
+| `PKB_BRAINTRUST_SAMPLE_RATE` | `1.0`                   | Production trace sampling rate.                  |
+| `PKB_BRAINTRUST_LOG_TEXT` | `false`                    | Log text previews. Keep false for production.    |
 | `PKB_TIER_BOOST_{0..3}` | `0.6 / 1.0 / 1.2 / 1.5`       | Score multiplier per `trust_tier`.               |
 | `PKB_BM25_TOPK`         | `50`                          | Candidates from FTS5.                            |
 | `PKB_VEC_TOPK`          | `50`                          | Candidates from Qdrant/sqlite-vec.               |
@@ -160,6 +165,8 @@ pkb eval evals/questions.jsonl --k 10 --min-recall 0.9 --output evals/latest-rep
 ```
 
 Track recall@k, MRR, source coverage, and expected-term coverage as the vault and ranking logic evolve. For a paid eval platform, use Braintrust + Autoevals to log these reports and add LLM-as-judge checks for factuality and answer completeness.
+
+See `docs/BRAINTRUST.md` for the production tracing and eval logging setup.
 
 ## Design choices, one-liner each
 
