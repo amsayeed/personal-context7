@@ -18,6 +18,25 @@ Run:
 pkb eval evals/questions.jsonl --k 10 --min-recall 0.9 --output evals/latest-report.json
 ```
 
+The repo includes a current-corpus smoke fixture:
+
+```bash
+pkb eval evals/pkb-smoke.jsonl --k 10 --min-recall 0.8 --output /private/tmp/pkb-smoke-report.json
+```
+
+Use `evals/pkb-smoke.jsonl` after adding books, changing chunking, changing retrieval,
+or redeploying Qdrant-backed retrieval.
+
+The repo also includes a broader baseline fixture:
+
+```bash
+pkb eval evals/wiki-eval-dataset.jsonl --k 10 --min-recall 0.8 --output /private/tmp/pkb-wiki-eval-report.json
+```
+
+Use this for trend tracking and retrieval tuning. It covers more ambiguous
+questions than the smoke fixture, so treat failures as tuning leads rather than
+automatic deploy blockers.
+
 Metrics:
 
 - `recall_at_k`: at least one expected source appeared in top `k`.

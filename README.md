@@ -69,6 +69,10 @@ CLI also has `pkb search "..."`, `pkb smart "..."`, `pkb topic "..."`, `pkb qdra
 
 See `docs/OBSIDIAN_SETUP.md`. The short version: front matter on every note with `title`, `domain`, `source_type`, `trust_tier`, `tags`. The template lives at `docs/TEMPLATE.md`.
 
+## How to operate it
+
+See `docs/OPERATION_RUNBOOK.md` for adding books, running ingestion checks, syncing Railway, monitoring Qdrant, running evals, and deploying app changes.
+
 ## How to add to agents
 
 See `docs/AGENT_INTEGRATION.md`. SSE URL + bearer header is all most MCP clients need.

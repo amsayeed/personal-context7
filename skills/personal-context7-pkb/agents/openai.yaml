@@ -1,0 +1,7 @@
+interface:
+  display_name: "Personal Context7 PKB"
+  short_description: "Operate PKB ingestion, evals, sync, and deploy"
+  default_prompt: "Use $personal-context7-pkb to ingest new books, sync Railway, run evals, and audit the PKB."
+
+policy:
+  allow_implicit_invocation: true

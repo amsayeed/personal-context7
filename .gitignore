@@ -7,6 +7,8 @@ data/*.db-journal
 data/*.db-shm
 data/*.db-wal
 .fastembed_cache/
+evals/*-report.json
+evals/latest-report.json
 .DS_Store
 *.egg-info/
 dist/
