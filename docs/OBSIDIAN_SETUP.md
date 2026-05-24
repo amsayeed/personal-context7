@@ -137,6 +137,41 @@ pkb eval evals/questions.jsonl
 
 The report includes recall@k and MRR. Add questions whenever an agent misses an answer you expected it to find.
 
+## Book/doc ingestion flow
+
+For a book split into chapter-by-chapter markdown, treat the book folder as one
+ingestion unit. First generate missing front matter in-place, then edit it in
+Obsidian's Properties UI, then validate, then index only that folder:
+
+```bash
+export PKB_KB_ROOT="/path/to/obsidian/wiki"
+
+pkb ingest annotate "/path/to/obsidian/wiki/Agents/30 Agents Every AI Engineer Must Build" \
+  --domain ai \
+  --source-type book \
+  --trust-tier 2 \
+  --tag agents \
+  --tag ai-engineering \
+  --collection "30 Agents Every AI Engineer Must Build"
+
+pkb ingest check "/path/to/obsidian/wiki/Agents/30 Agents Every AI Engineer Must Build"
+pkb ingest index "/path/to/obsidian/wiki/Agents/30 Agents Every AI Engineer Must Build"
+```
+
+`annotate` only fills missing metadata unless `--overwrite` is passed. It is safe
+to run with `--dry-run` first. `index` refuses to ingest files that are missing
+`title`, `domain`, `source_type`, or `trust_tier`; the markdown remains the source
+of truth. SQLite and Qdrant are rebuildable indexes.
+
+Set `PKB_REQUIRE_METADATA=true` on the hosted service when you want regular
+`pkb build`, `pkb sync`, and `/webhook/sync` to enforce the same required
+front-matter gate.
+
+For hundreds of books, do not bulk-ingest everything at once. Ingest 5-10 books,
+add eval fixtures for the questions you care about, run `pkb eval`, then continue.
+Retrieval quality needs a feedback loop; storage alone will not prevent noisy
+or contradictory results.
+
 ## What `pkb` doesn't do (yet)
 
 - It doesn't resolve `[[wikilinks]]` to follow citation graphs. They embed as text, which gives partial credit.

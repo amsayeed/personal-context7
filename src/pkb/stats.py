@@ -51,7 +51,10 @@ def collect(conn, cfg: Config) -> dict:
         "by_freshness_status": _group_counts(conn, "freshness_status"),
         "embed_model": cfg.embed_model,
         "embed_dim": cfg.embed_dim,
+        "vector_backend": cfg.vector_backend,
+        "qdrant_collection": cfg.qdrant_collection if cfg.vector_backend == "qdrant" else None,
         "rerank_enabled": cfg.rerank_enabled,
         "rerank_model": cfg.rerank_model,
+        "mcp_profile": cfg.mcp_profile,
         "transport": cfg.transport,
     }

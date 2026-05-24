@@ -248,6 +248,28 @@ def doc_metadata(conn: sqlite3.Connection, path: str) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def chunks_by_ids(conn: sqlite3.Connection, chunk_ids: Sequence[str]) -> dict[str, sqlite3.Row]:
+    """Fetch retriever-ready chunk rows keyed by chunk_id."""
+    ids = list(dict.fromkeys(chunk_ids))
+    if not ids:
+        return {}
+    qmarks = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"""
+        SELECT
+            c.chunk_id, d.path, d.title, c.heading_path, c.text, c.n_tokens,
+            d.source_type, d.domain, d.trust_tier, d.folder,
+            d.summary, d.aliases_json, d.key_concepts_json, d.canonical_for_json,
+            d.canonical_questions_json, d.last_reviewed, d.freshness_status
+        FROM chunks c
+        JOIN documents d ON d.doc_id = c.doc_id
+        WHERE c.chunk_id IN ({qmarks})
+        """,
+        ids,
+    ).fetchall()
+    return {row["chunk_id"]: row for row in rows}
+
+
 def _fts_query(q: str) -> str:
     """Sanitize free-text for FTS5 — strip operator chars, OR each token, prefix-expand."""
     safe = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in q)

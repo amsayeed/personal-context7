@@ -47,6 +47,20 @@ Restart Claude Code. You should see `pkb` listed under MCP tools. Try:
 
 Settings → Extensions → MCP servers → add a custom SSE server with the URL and bearer header.
 
+### Factory Droid
+
+Use SSE, not streamable HTTP:
+
+```bash
+droid mcp remove pkb
+droid mcp add pkb https://pkb-production.up.railway.app/sse \
+  --type sse \
+  --header "Authorization: Bearer YOUR_PKB_API_KEY"
+```
+
+If Factory says the endpoint rejected streamable HTTP, the server was added with
+`--type http`; remove and re-add it with `--type sse`.
+
 ### Cursor
 
 `~/.cursor/mcp.json`:
@@ -71,33 +85,29 @@ All recent MCP-supporting clients use the same shape: an SSE URL plus a `headers
 The default tool descriptions are decent, but adding a one-liner to the agent's system prompt sharpens behavior. Try something like:
 
 > When the user asks about architecture, data, AI, or system-design patterns,
-> prefer `pkb.smart_search_json` over guessing. For comparative questions ("X vs Y"),
-> decompose into 2–4 sub-queries and call `pkb.multi_search`. For questions
-> phrased very differently than how the notes likely read, draft a 2-sentence
-> hypothetical answer first and call `pkb.hyde_search(query, hypothesis)`.
-> Cite the returned `source:` paths in your answer.
+> prefer `pkb.retrieve_json` over guessing. For comparative questions ("X vs Y"),
+> decompose into 2–5 sub-queries and call `pkb.multi_search_json`. For architecture
+> decisions, call `pkb.decision_evidence_json`, compare tradeoffs/conflicts, state
+> assumptions, and cite returned source paths/headings.
 
 That nudge alone is the difference between an agent that quotes your KB and one that forgets it exists.
 
 ## Tool reference
 
-What's exposed via MCP:
+Default `PKB_MCP_PROFILE=agent` exposes only:
 
 | Tool                                          | When to call                                                     |
 | --------------------------------------------- | ---------------------------------------------------------------- |
-| `resolve_topic(query, limit, filters...)`     | "Which document covers X?" — returns candidate doc paths.        |
-| `get_docs(topic_id, query?, tokens?)`         | After resolve_topic, pull ranked chunks from one doc.            |
-| `search(query, ..., min_tier=2)`              | One-shot hybrid search. The workhorse.                           |
-| `smart_search(query, ..., min_tier=2)`        | Expanded search with deterministic query variants.               |
-| `multi_search(queries=[...])`                 | Comparative or compound questions. Pass 2–5 sub-queries.         |
-| `hyde_search(query, hypothesis)`              | Recall lift when the user's phrasing diverges from the notes.    |
-| `resolve_topic_json`, `get_docs_json`         | Structured citation metadata; preferred for agent pipelines.     |
-| `search_json`, `smart_search_json`            | Structured search payloads with text and metadata.               |
-| `doctor_json()`                               | KB hygiene report: metadata, stale reviews, chunks, wikilinks.   |
-| `sync()`                                      | Pull from git + re-index changed files.                          |
-| `stats()` / `stats_json()`                    | Sanity check with freshness, git SHA, DB size, breakdowns.       |
+| `retrieve_json`                               | Default retrieval; expanded hybrid search with citations.        |
+| `get_docs_json(topic_id, query?, tokens?)`    | Pull ranked chunks from one selected doc/source path.            |
+| `resolve_topic_json(query, limit, filters...)`| "Which document covers X?" — returns candidate doc paths.        |
+| `multi_search_json(queries=[...])`            | Comparative or compound questions. Pass 2–5 sub-queries.         |
+| `decision_evidence_json(question, options?)`  | Evidence package for architecture decisions.                     |
 
 Filters available on every search tool: `tags`, `source_types`, `domains`, `folders`, `min_tier`.
+
+Admin maintenance tools are exposed only when `PKB_MCP_PROFILE=admin` or `full`:
+`sync`, `stats`, `stats_json`, `doctor_json`.
 
 ## Keeping the index fresh
 
@@ -177,8 +187,8 @@ If `/stats` shows `documents: 0`, your KB hasn't been pulled yet — check `PKB_
 
 ```bash
 NEW_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-railway variables --set "PKB_API_KEY=$NEW_KEY" --service pkb
-railway redeploy --service pkb
+printf %s "$NEW_KEY" | railway variable set PKB_API_KEY --stdin --service personal-context7
+railway redeploy --service personal-context7 --yes
 # then update each MCP client config + GitHub Actions secret
 ```
 

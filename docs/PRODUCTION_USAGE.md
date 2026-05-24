@@ -144,19 +144,17 @@ curl -X POST \
 
 ## 🛠️ Available MCP Tools
 
-Once connected, your AI agent will have access to these tools:
+With the default `PKB_MCP_PROFILE=agent`, your AI agent will have access to these tools:
 
 | Tool | Purpose |
 |------|---------|
-| `resolve_topic` | Find which documents cover a specific topic |
-| `get_docs` | Retrieve ranked chunks from a specific document |
-| `search` | One-shot hybrid search (semantic + keyword) |
-| `smart_search` | Expanded search with query variants |
-| `multi_search` | Search multiple queries at once |
-| `hyde_search` | Hypothetical document embedding search |
-| `doctor_json` | KB hygiene and metadata report |
-| `sync` | Trigger git pull + reindex |
-| `stats` | Get index statistics |
+| `retrieve_json` | Default expanded hybrid retrieval with citations |
+| `get_docs_json` | Retrieve ranked chunks from a specific document |
+| `resolve_topic_json` | Find which documents cover a specific topic |
+| `multi_search_json` | Search multiple decomposed queries at once |
+| `decision_evidence_json` | Gather evidence for architecture decisions |
+
+Use `PKB_MCP_PROFILE=admin` for maintenance tools: `sync`, `stats`, `stats_json`, `doctor_json`.
 
 ## 📝 Example Usage with Claude Code
 

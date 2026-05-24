@@ -1,6 +1,6 @@
 # Personal Context7 (`pkb`)
 
-A Context7-style MCP server over **your own markdown KB** — books, notes, architecture playbooks, system-design references. Hybrid retrieval (BM25 + dense embeddings) with Reciprocal Rank Fusion, metadata-aware soft boost, cross-encoder rerank, and multi-hop tools (`multi_search`, `hyde_search`). One SQLite file. Runs locally over stdio or hosted on Railway over SSE behind bearer auth.
+A Context7-style MCP server over **your own markdown KB** — books, notes, architecture playbooks, system-design references. Hybrid retrieval (BM25 + dense embeddings) with Reciprocal Rank Fusion, metadata-aware soft boost, cross-encoder rerank, decision-evidence tools, and evals. SQLite stores metadata/BM25; Qdrant can store dense vectors for larger KBs. Runs locally over stdio or hosted on Railway over SSE behind bearer auth.
 
 ```
 Obsidian vault
@@ -9,7 +9,9 @@ Obsidian vault
 GitHub (private repo)
    │  /webhook/sync       (or GitHub Action on push)
    ▼
-Railway service  ──►  pulls KB  ──►  pkb sync (incremental)  ──►  kb.db (FTS5 + sqlite-vec)
+Railway service  ──►  pulls KB  ──►  pkb sync (incremental)
+   │                                      ├── kb.db (metadata + FTS5/BM25)
+   │                                      └── Qdrant (dense vectors, optional but recommended at scale)
    │ /sse  bearer
    ▼
 your agents (Claude Code, Cowork, Cursor, …)
@@ -17,12 +19,13 @@ your agents (Claude Code, Cowork, Cursor, …)
 
 ## What's inside
 
-- **Hybrid retrieval** — BM25 (FTS5) + dense (`sqlite-vec` + `BAAI/bge-small-en-v1.5`) fused with Reciprocal Rank Fusion (k=60).
+- **Hybrid retrieval** — BM25 (FTS5) + dense (`Qdrant` or `sqlite-vec` + `BAAI/bge-small-en-v1.5`) fused with Reciprocal Rank Fusion (k=60).
 - **Metadata-aware ranking** — `trust_tier` soft-boosts your own synthesis over raw highlights over archive.
 - **Cross-encoder rerank** — on by default; ~150ms latency, big quality lift.
-- **Multi-hop** — `multi_search` for comparative questions, `hyde_search` when phrasing diverges from notes.
+- **Decision evidence** — `decision_evidence_json` retrieves and packages evidence for architecture decisions across books.
+- **Multi-hop** — `multi_search_json` for comparative questions; legacy/full profile still exposes HyDE.
 - **Context7-style metadata** — summaries, aliases, canonical topics/questions, freshness, and JSON citation payloads.
-- **Quality loop** — `pkb doctor` for vault hygiene and `pkb eval` for retrieval recall/MRR fixtures.
+- **Quality loop** — `pkb doctor` for vault hygiene and `pkb eval` for retrieval recall/MRR/source/term coverage fixtures.
 - **Hard filters** — by `tags`, `source_type`, `domain`, `folder`, `min_tier`.
 - **Two transports** — stdio (local) or SSE (hosted) over the same code, same tool set.
 - **Git-backed KB** — clones a private repo on boot, pulls on `/webhook/sync` or via the `sync` MCP tool.
@@ -59,7 +62,7 @@ pkb sync                 # incremental from then on
 pkb serve                # MCP stdio — point a local MCP client at this command
 ```
 
-CLI also has `pkb search "..."`, `pkb smart "..."`, `pkb topic "..."`, `pkb doctor`, `pkb eval evals/questions.jsonl`, and `pkb stats` for poking around.
+CLI also has `pkb search "..."`, `pkb smart "..."`, `pkb topic "..."`, `pkb qdrant-check`, `pkb qdrant-backfill`, `pkb doctor`, `pkb eval evals/questions.jsonl`, and `pkb stats` for poking around.
 
 ## How to prepare your vault
 
@@ -78,31 +81,89 @@ See `docs/AGENT_INTEGRATION.md`. SSE URL + bearer header is all most MCP clients
 | `PKB_DATA_DIR`          | `./data` (Railway: `/data`)   | Parent for db + cache. Mounted as a volume.      |
 | `PKB_KB_GIT_REMOTE`     | —                             | `https://x:TOKEN@github.com/you/notes.git`       |
 | `PKB_KB_GIT_BRANCH`     | `main`                        |                                                  |
+| `PKB_REQUIRE_METADATA`   | `false`                       | Refuse build/sync when required front matter is missing. |
 | `PKB_TRANSPORT`         | `stdio`                       | `stdio` or `sse`. Railway uses `sse`.            |
 | `PKB_API_KEY`           | (required for SSE)            | Bearer token clients send.                       |
 | `PORT`                  | `8000`                        | Railway sets this; uvicorn binds to it.          |
 | `PKB_RERANK`            | `true`                        | Cross-encoder rerank on the top-N.               |
 | `PKB_EMBED_MODEL`       | `BAAI/bge-small-en-v1.5`      | Any fastembed model id (mind `PKB_EMBED_DIM`).   |
+| `PKB_VECTOR_BACKEND`    | `sqlite`                      | `sqlite` or `qdrant`. Use `qdrant` for large KBs.|
+| `PKB_QDRANT_URL`        | `http://localhost:6333`       | Qdrant Cloud/local URL when Qdrant is enabled.   |
+| `PKB_QDRANT_API_KEY`    | —                             | Qdrant Cloud API key.                            |
+| `PKB_QDRANT_COLLECTION` | `pkb_chunks`                  | Dense-vector collection name.                    |
 | `PKB_FINAL_TOPK`        | `12`                          | Hits returned to the agent.                      |
 | `PKB_TOKEN_BUDGET`      | `4000`                        | Default `tokens` for retrieval tools.            |
+| `PKB_MCP_PROFILE`       | `agent`                       | `agent`, `admin`, `legacy`, or `full`.           |
 | `PKB_TIER_BOOST_{0..3}` | `0.6 / 1.0 / 1.2 / 1.5`       | Score multiplier per `trust_tier`.               |
 | `PKB_BM25_TOPK`         | `50`                          | Candidates from FTS5.                            |
-| `PKB_VEC_TOPK`          | `50`                          | Candidates from sqlite-vec.                      |
+| `PKB_VEC_TOPK`          | `50`                          | Candidates from Qdrant/sqlite-vec.               |
 | `PKB_RRF_K`             | `60`                          | RRF constant.                                    |
+
+## MCP tool profiles
+
+Default `PKB_MCP_PROFILE=agent` exposes only the tools an autonomous model should normally see:
+
+```text
+retrieve_json
+get_docs_json
+resolve_topic_json
+multi_search_json
+decision_evidence_json
+```
+
+Use `PKB_MCP_PROFILE=admin` for maintenance tools:
+
+```text
+sync
+stats
+stats_json
+doctor_json
+```
+
+Use `PKB_MCP_PROFILE=full` only for debugging; it exposes both modern and legacy tools.
+
+## Qdrant mode
+
+For hundreds of books, set:
+
+```bash
+export PKB_VECTOR_BACKEND=qdrant
+export PKB_QDRANT_URL=https://YOUR-CLUSTER.qdrant.io
+export PKB_QDRANT_API_KEY=...
+export PKB_QDRANT_COLLECTION=pkb_chunks
+pkb qdrant-check
+pkb build
+```
+
+SQLite still stores the source metadata, chunks, and BM25 index. Qdrant stores dense vectors and filterable payload. Retrieval uses both and fuses results with RRF.
+
+When enabling Qdrant after a SQLite index already exists, run:
+
+```bash
+pkb qdrant-backfill --recreate
+```
+
+That copies the existing SQLite vectors into Qdrant without re-embedding every markdown file.
 
 ## Retrieval quality loop
 
 Run `pkb doctor` to catch missing metadata, duplicate titles, stale reviews, broken wikilinks, empty notes, and large chunks. Add JSONL fixtures like:
 
 ```jsonl
-{"question":"When should I use event sourcing?","expected_sources":["arch-patterns/event-sourcing.md"]}
+{"question":"When should I use event sourcing?","expected_sources":["arch-patterns/event-sourcing.md"],"expected_terms":["auditability","replay"]}
 ```
 
-Then run `pkb eval evals/questions.jsonl` to track recall@k and MRR as the vault and ranking logic evolve.
+Then run:
+
+```bash
+pkb eval evals/questions.jsonl --k 10 --min-recall 0.9 --output evals/latest-report.json
+```
+
+Track recall@k, MRR, source coverage, and expected-term coverage as the vault and ranking logic evolve. For a paid eval platform, use Braintrust + Autoevals to log these reports and add LLM-as-judge checks for factuality and answer completeness.
 
 ## Design choices, one-liner each
 
-- **SQLite as the *only* datastore.** FTS5 + sqlite-vec live in the same file. Backup = `cp`. Cold start <100ms.
+- **SQLite as metadata/BM25 source of truth.** FTS5 remains local and reliable; Qdrant is optional for dense vectors at scale.
 - **`fastembed` over `sentence-transformers`.** ONNX runtime, no torch, 80MB. CPU is fine at this scale.
 - **RRF over weighted-sum fusion.** Score-free, no per-corpus tuning, robust across query types.
 - **Heading-aware chunks with the H1>H2>H3 path prepended.** Architecture content puts meaning in headings; we don't throw that away.
@@ -111,10 +172,10 @@ Then run `pkb eval evals/questions.jsonl` to track recall@k and MRR as the vault
 
 ## Performance notes
 
-- Query latency (200k chunks, hosted): ~50ms hybrid + ~100ms rerank + ~50ms network = ~200ms p50.
+- Query latency depends on Qdrant size, network, and rerank. Keep `PKB_BM25_TOPK`, `PKB_VEC_TOPK`, and `PKB_FINAL_TOPK` explicit and measure with evals.
 - First build of 5GB markdown: ~20–60 min depending on CPUs. Subsequent `sync` only touches changed files.
 - Embedding model + reranker together: ~250MB resident. 1GB instance is comfortable.
-- `sqlite-vec` brute-force KNN is fine up to ~500k vectors. Past 1M, partition by folder/domain or graduate to LanceDB while keeping FTS5 in SQLite.
+- `sqlite-vec` is the local fallback. For hundreds of books, use Qdrant and keep SQLite for BM25/metadata.
 
 ## Repo layout
 
@@ -128,6 +189,7 @@ personal-context7/
 │   ├── config.py             # all env vars
 │   ├── chunker.py            # heading-aware, Obsidian-friendly
 │   ├── store.py              # FTS5 + sqlite-vec + metadata columns
+│   ├── qdrant_store.py       # Qdrant dense-vector backend
 │   ├── embed.py              # fastembed wrapper
 │   ├── indexer.py            # build + sync pipelines
 │   ├── retriever.py          # RRF + tier boost + rerank + multi/hyde

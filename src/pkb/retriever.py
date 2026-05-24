@@ -26,7 +26,8 @@ from typing import Iterable
 
 from .config import Config
 from .embed import embed_query
-from .store import bm25_search, vec_search
+from . import qdrant_store
+from .store import bm25_search, vec_search as sqlite_vec_search
 
 
 _STOPWORDS = {
@@ -199,11 +200,25 @@ def _both_searches(
         f_vc = ex.submit(
             lambda: vec_search(
                 conn,
+                cfg,
                 embed_query(query, model=cfg.embed_model, cache_dir=cfg.cache_dir),
                 cfg.vec_topk, **fkw,
             )
         )
         return f_bm.result(), f_vc.result()
+
+
+def vec_search(
+    conn: sqlite3.Connection,
+    cfg: Config,
+    embedding,
+    k: int,
+    **filters,
+) -> list:
+    """Dispatch dense vector search to SQLite fallback or Qdrant."""
+    if qdrant_store.enabled(cfg):
+        return qdrant_store.vec_search(conn, cfg, embedding, k, **filters)
+    return sqlite_vec_search(conn, embedding, k, **filters)
 
 
 # ---------- public retrieval entry points ----------
@@ -348,6 +363,7 @@ def hyde_search(
         f_vc = ex.submit(
             lambda: vec_search(
                 conn,
+                cfg,
                 embed_query(hypothesis, model=cfg.embed_model, cache_dir=cfg.cache_dir),
                 cfg.vec_topk, **fkw,
             )

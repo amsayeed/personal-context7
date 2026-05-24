@@ -21,7 +21,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from . import store
+from . import qdrant_store, store
 from .chunker import Chunk, chunk_file, walk_kb
 from .config import Config
 from .embed import embed_passages
@@ -72,6 +72,7 @@ def _index_files(conn, cfg: Config, paths: list[Path], label: str) -> tuple[int,
             )
 
             # Group by doc, write atomically.
+            qdrant_batches: list[tuple[str, list[Chunk], list[list[float]]]] = []
             with conn:
                 docs: dict[str, list[tuple[Chunk, list[float]]]] = {}
                 for ch, vec in zip(all_chunks, embeddings):
@@ -111,12 +112,53 @@ def _index_files(conn, cfg: Config, paths: list[Path], label: str) -> tuple[int,
                             n_tokens=ch.n_tokens,
                             embedding=vec,
                         )
+                    qdrant_batches.append(
+                        (
+                            doc_id,
+                            [chunk for chunk, _ in pairs],
+                            [vector for _, vector in pairs],
+                        )
+                    )
+
+            if qdrant_store.enabled(cfg):
+                for doc_id, chunks, vectors in qdrant_batches:
+                    qdrant_store.delete_doc(cfg, doc_id)
+                    qdrant_store.upsert_chunks(cfg, chunks, vectors)
 
             n_files += len(file_batch)
             n_chunks += len(all_chunks)
             prog.update(task, advance=len(file_batch), chunks=n_chunks)
 
     return n_files, n_chunks
+
+
+def ensure_metadata_if_required(cfg: Config, paths: list[Path]) -> None:
+    """Fail early when strict ingestion metadata is enabled."""
+    if not cfg.require_metadata or not paths:
+        return
+
+    from . import ingest
+
+    domains, source_types = ingest.load_vocab(cfg)
+    issues = ingest.validate_metadata(
+        paths,
+        root=cfg.kb_root,
+        domains=domains,
+        source_types=source_types,
+    )
+    errors = [issue for issue in issues if issue.severity == "error"]
+    if not errors:
+        return
+
+    preview = "\n".join(
+        f"- {issue.path}: {issue.message}"
+        for issue in errors[:20]
+    )
+    suffix = "" if len(errors) <= 20 else f"\n...and {len(errors) - 20} more errors"
+    raise RuntimeError(
+        "metadata validation failed; run `pkb ingest annotate` and edit the "
+        f"front matter before indexing:\n{preview}{suffix}"
+    )
 
 
 def remove_stale_docs(conn, cfg: Config, paths: list[Path], *, announce: bool = True) -> int:
@@ -132,6 +174,7 @@ def remove_stale_docs(conn, cfg: Config, paths: list[Path], *, announce: bool = 
         for rel in stale:
             row = conn.execute("SELECT doc_id FROM documents WHERE path = ?", (rel,)).fetchone()
             if row:
+                qdrant_store.delete_doc(cfg, row["doc_id"])
                 store.delete_doc_chunks(conn, row["doc_id"])
                 conn.execute("DELETE FROM documents WHERE doc_id = ?", (row["doc_id"],))
     return len(stale)
@@ -148,6 +191,7 @@ def build(cfg: Config) -> None:
 
     paths = list(walk_kb(cfg.kb_root))
     remove_stale_docs(conn, cfg, paths)
+    ensure_metadata_if_required(cfg, paths)
 
     nf, nc = _index_files(conn, cfg, paths, "Indexing")
     console.print(f"[green]Done.[/green] {nf} files / {nc} chunks indexed.")
@@ -178,5 +222,6 @@ def sync(cfg: Config) -> None:
         console.print(f"[green]Index up-to-date.[/green]{suffix}")
         return
 
+    ensure_metadata_if_required(cfg, to_index)
     nf, nc = _index_files(conn, cfg, to_index, "Syncing")
     console.print(f"[green]Synced[/green] {nf} files / {nc} chunks.")

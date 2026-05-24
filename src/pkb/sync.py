@@ -121,6 +121,7 @@ def sync_now(cfg: Config) -> SyncResult:
                 index_msg += f" ({removed} deleted files removed)"
             return SyncResult(ok=True, pulled=pulled, n_files=0, n_chunks=0,
                               message="; ".join(msg_parts + [index_msg]))
+        indexer.ensure_metadata_if_required(cfg, candidates)
         nf, nc = indexer._index_files(conn, cfg, candidates, "Syncing")
         index_msg = f"index: {nf} files / {nc} chunks"
         if removed:

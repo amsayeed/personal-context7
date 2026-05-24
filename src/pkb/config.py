@@ -44,6 +44,13 @@ class Config:
     embed_model: str
     embed_dim: int
 
+    # --- vector backend
+    vector_backend: str             # "sqlite" | "qdrant"
+    qdrant_url: str | None
+    qdrant_api_key: str | None
+    qdrant_collection: str
+    qdrant_timeout: float
+
     # --- retrieval
     bm25_topk: int
     vec_topk: int
@@ -69,6 +76,10 @@ class Config:
     # --- git-backed KB
     kb_git_remote: str | None      # e.g. "https://x:TOKEN@github.com/you/notes.git"
     kb_git_branch: str             # default "main"
+    require_metadata: bool         # fail build/sync when required front matter is missing
+
+    # --- MCP tool exposure
+    mcp_profile: str               # "agent" | "admin" | "legacy" | "full"
 
     @property
     def tier_boost(self) -> dict[int, float]:
@@ -100,6 +111,11 @@ def load() -> Config:
         chunk_overlap_tokens=_env_int("PKB_CHUNK_OVERLAP", 120),
         embed_model=os.environ.get("PKB_EMBED_MODEL", "BAAI/bge-small-en-v1.5"),
         embed_dim=_env_int("PKB_EMBED_DIM", 384),
+        vector_backend=os.environ.get("PKB_VECTOR_BACKEND", "sqlite").lower(),
+        qdrant_url=os.environ.get("PKB_QDRANT_URL") or os.environ.get("QDRANT_URL"),
+        qdrant_api_key=os.environ.get("PKB_QDRANT_API_KEY") or os.environ.get("QDRANT_API_KEY"),
+        qdrant_collection=os.environ.get("PKB_QDRANT_COLLECTION", "pkb_chunks"),
+        qdrant_timeout=_env_float("PKB_QDRANT_TIMEOUT", 20.0),
         bm25_topk=_env_int("PKB_BM25_TOPK", 50),
         vec_topk=_env_int("PKB_VEC_TOPK", 50),
         rrf_k=_env_int("PKB_RRF_K", 60),
@@ -117,4 +133,6 @@ def load() -> Config:
         api_key=os.environ.get("PKB_API_KEY"),
         kb_git_remote=os.environ.get("PKB_KB_GIT_REMOTE"),
         kb_git_branch=os.environ.get("PKB_KB_GIT_BRANCH", "main"),
+        require_metadata=_env_bool("PKB_REQUIRE_METADATA", False),
+        mcp_profile=os.environ.get("PKB_MCP_PROFILE", "agent").lower(),
     )

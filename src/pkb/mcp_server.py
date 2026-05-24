@@ -8,13 +8,12 @@ Two transports, same tool set:
 Selected via PKB_TRANSPORT env (default stdio). On Railway, set sse.
 
 Tool set:
-    resolve_topic(query, ...)             — find candidate documents.
-    get_docs(topic_id, query?, tokens?)   — pull ranked chunks from one document.
-    search(query, ...)                    — single hybrid search across the KB.
-    multi_search(queries[], ...)          — fan-out to N queries, fuse, rerank.
-    hyde_search(query, hypothesis, ...)   — agent supplies a hypothetical doc; we embed it.
-    sync()                                — git pull + incremental reindex.
-    stats()                               — index health.
+    retrieve_json(query, ...)             — default structured retrieval for agents.
+    resolve_topic_json(query, ...)        — find candidate documents.
+    get_docs_json(topic_id, ...)          — pull ranked chunks from one document.
+    multi_search_json(queries[], ...)     — fan-out to N queries, fuse, rerank.
+    decision_evidence_json(question, ...) — evidence package for architecture decisions.
+    admin profile: sync(), stats_json(), doctor_json().
 
 All search tools accept the same filters: tags, source_types, domains, folders, min_tier.
 """
@@ -23,9 +22,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from threading import Thread
+from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from . import config as cfg_module
 from . import doctor as doctor_module
@@ -40,7 +42,85 @@ log = logging.getLogger("pkb")
 cfg = cfg_module.load()
 bootstrap_kb(cfg)  # idempotent: clones the KB repo on first boot
 
-mcp = FastMCP("pkb")
+
+def _split_env_list(key: str) -> list[str]:
+    value = os.environ.get(key, "")
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _host_from_url_or_host(value: str) -> str | None:
+    parsed = urlparse(value if "://" in value else f"//{value}")
+    return parsed.netloc or parsed.path or None
+
+
+def _origin_from_url(value: str) -> str | None:
+    parsed = urlparse(value)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _transport_security() -> TransportSecuritySettings | None:
+    if cfg.transport != "sse":
+        return None
+
+    hosts = [
+        "127.0.0.1:*",
+        "localhost:*",
+        "[::1]:*",
+    ]
+    origins = [
+        "http://127.0.0.1:*",
+        "http://localhost:*",
+        "http://[::1]:*",
+    ]
+
+    for key in ("RAILWAY_PUBLIC_DOMAIN", "RAILWAY_PRIVATE_DOMAIN"):
+        value = os.environ.get(key)
+        if value:
+            host = _host_from_url_or_host(value)
+            if host:
+                hosts.append(host)
+
+    for key in ("RAILWAY_STATIC_URL", "RAILWAY_SERVICE_PERSONAL_CONTEXT7_URL", "PKB_PUBLIC_URL"):
+        value = os.environ.get(key)
+        if value:
+            host = _host_from_url_or_host(value)
+            origin = _origin_from_url(value)
+            if host:
+                hosts.append(host)
+            if origin:
+                origins.append(origin)
+
+    hosts.extend(_split_env_list("PKB_ALLOWED_HOSTS"))
+    origins.extend(_split_env_list("PKB_ALLOWED_ORIGINS"))
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=sorted(set(hosts)),
+        allowed_origins=sorted(set(origins)),
+    )
+
+
+mcp = FastMCP("pkb", host=cfg.host, port=cfg.port, transport_security=_transport_security())
+
+
+def _profile_enabled(*profiles: str) -> bool:
+    """Control MCP tool exposure without changing retrieval code."""
+    profile = cfg.mcp_profile
+    if profile == "full":
+        return True
+    return profile in set(profiles)
+
+
+def pkb_tool(*profiles: str):
+    """Register a function as an MCP tool only for selected profiles."""
+    def decorator(fn):
+        if _profile_enabled(*profiles):
+            return mcp.tool()(fn)
+        return fn
+
+    return decorator
 
 _conn = store.connect(cfg.db_path)
 store.init(_conn, cfg.embed_dim)
@@ -93,7 +173,7 @@ def _hits_json(hits) -> str:
 
 # ---------- tools ----------
 
-@mcp.tool()
+@pkb_tool("legacy")
 def resolve_topic(
     query: str, limit: int = 8,
     domain: str | None = None, source_type: str | None = None, min_tier: int | None = None,
@@ -121,7 +201,7 @@ def resolve_topic(
     )
 
 
-@mcp.tool()
+@pkb_tool("legacy")
 def get_docs(topic_id: str, query: str | None = None, tokens: int | None = None) -> str:
     """
     Fetch ranked chunks from a chosen document (topic_id == relative path).
@@ -141,7 +221,7 @@ def get_docs(topic_id: str, query: str | None = None, tokens: int | None = None)
     return "\n".join(parts)
 
 
-@mcp.tool()
+@pkb_tool("agent", "legacy")
 def resolve_topic_json(
     query: str, limit: int = 8,
     domain: str | None = None, source_type: str | None = None, min_tier: int | None = None,
@@ -160,14 +240,39 @@ def resolve_topic_json(
     )
 
 
-@mcp.tool()
+@pkb_tool("agent", "legacy")
 def get_docs_json(topic_id: str, query: str | None = None, tokens: int | None = None) -> str:
     """Structured variant of get_docs with explicit citation metadata per chunk."""
     hits = retriever.get_docs(_conn, cfg, topic_id, query, token_budget=tokens)
     return _hits_json(hits)
 
 
-@mcp.tool()
+@pkb_tool("agent")
+def retrieve_json(
+    query: str,
+    tokens: int | None = None,
+    tags: list[str] | None = None,
+    source_types: list[str] | None = None,
+    domains: list[str] | None = None,
+    folders: list[str] | None = None,
+    min_tier: int | None = None,
+) -> str:
+    """
+    Default retrieval tool for agents. Uses expanded hybrid retrieval
+    (BM25 + vector + RRF + rerank) and returns structured citation records.
+    """
+    hits = retriever.smart_search(
+        _conn,
+        cfg,
+        query,
+        filt=_filt(tags=tags, source_types=source_types, domains=domains,
+                   folders=folders, min_tier=min_tier),
+        token_budget=tokens,
+    )
+    return _hits_json(hits)
+
+
+@pkb_tool("legacy")
 def search(
     query: str, tokens: int | None = None,
     tags: list[str] | None = None,
@@ -195,7 +300,7 @@ def search(
     return _render_hits(hits)
 
 
-@mcp.tool()
+@pkb_tool("legacy")
 def search_json(
     query: str, tokens: int | None = None,
     tags: list[str] | None = None,
@@ -214,7 +319,7 @@ def search_json(
     return _hits_json(hits)
 
 
-@mcp.tool()
+@pkb_tool("legacy")
 def smart_search(
     query: str, tokens: int | None = None,
     tags: list[str] | None = None,
@@ -236,7 +341,7 @@ def smart_search(
     return _render_hits(hits)
 
 
-@mcp.tool()
+@pkb_tool("legacy")
 def smart_search_json(
     query: str, tokens: int | None = None,
     tags: list[str] | None = None,
@@ -255,7 +360,7 @@ def smart_search_json(
     return _hits_json(hits)
 
 
-@mcp.tool()
+@pkb_tool("legacy")
 def multi_search(
     queries: list[str], tokens: int | None = None,
     tags: list[str] | None = None,
@@ -280,7 +385,109 @@ def multi_search(
     return _render_hits(hits)
 
 
-@mcp.tool()
+@pkb_tool("agent")
+def multi_search_json(
+    queries: list[str],
+    tokens: int | None = None,
+    tags: list[str] | None = None,
+    source_types: list[str] | None = None,
+    domains: list[str] | None = None,
+    folders: list[str] | None = None,
+    min_tier: int | None = None,
+) -> str:
+    """
+    Structured multi-query retrieval. Use for comparative or compound questions
+    after decomposing the user request into 2-5 focused sub-queries.
+    """
+    hits = retriever.multi_search(
+        _conn,
+        cfg,
+        queries,
+        filt=_filt(tags=tags, source_types=source_types, domains=domains,
+                   folders=folders, min_tier=min_tier),
+        token_budget=tokens,
+    )
+    return _hits_json(hits)
+
+
+@pkb_tool("agent")
+def decision_evidence_json(
+    question: str,
+    options: list[str] | None = None,
+    tokens: int | None = None,
+    domains: list[str] | None = None,
+    source_types: list[str] | None = None,
+    folders: list[str] | None = None,
+    min_tier: int | None = 1,
+) -> str:
+    """
+    Retrieve evidence for architecture decisions. Returns candidate evidence plus
+    a decision protocol for the calling model: compare claims, tradeoffs,
+    conflicts, assumptions, and cite sources before choosing.
+    """
+    queries = [question]
+    if options:
+        queries.extend(
+            f"{question} {option} tradeoffs failure modes when to use"
+            for option in options
+        )
+    hits = (
+        retriever.multi_search(
+            _conn,
+            cfg,
+            queries,
+            filt=_filt(source_types=source_types, domains=domains,
+                       folders=folders, min_tier=min_tier),
+            token_budget=tokens,
+        )
+        if len(queries) > 1
+        else retriever.smart_search(
+            _conn,
+            cfg,
+            question,
+            filt=_filt(source_types=source_types, domains=domains,
+                       folders=folders, min_tier=min_tier),
+            token_budget=tokens,
+        )
+    )
+    records = [retriever.hit_record(hit) for hit in hits]
+    sources = []
+    seen = set()
+    for hit in hits:
+        if hit.path in seen:
+            continue
+        seen.add(hit.path)
+        sources.append(
+            {
+                "path": hit.path,
+                "title": hit.title,
+                "source_type": hit.source_type,
+                "domain": hit.domain,
+                "trust_tier": hit.trust_tier,
+                "freshness_status": hit.freshness_status,
+            }
+        )
+    return json.dumps(
+        {
+            "question": question,
+            "options": options or [],
+            "queries": queries,
+            "decision_protocol": [
+                "Extract concrete claims and tradeoffs from the evidence.",
+                "Group agreement and conflict across sources.",
+                "Prefer higher trust_tier, newer edition/current status, and directly relevant chapters.",
+                "State assumptions and missing evidence before the recommendation.",
+                "Return the final decision with citations to source paths/headings.",
+            ],
+            "sources": sources,
+            "evidence": records,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@pkb_tool("legacy")
 def hyde_search(
     query: str, hypothesis: str, tokens: int | None = None,
     tags: list[str] | None = None,
@@ -305,7 +512,7 @@ def hyde_search(
     return _render_hits(hits)
 
 
-@mcp.tool()
+@pkb_tool("admin")
 def sync() -> str:
     """
     Trigger a git pull (if PKB_KB_GIT_REMOTE is configured) and incrementally
@@ -319,19 +526,19 @@ def sync() -> str:
     }, indent=2)
 
 
-@mcp.tool()
+@pkb_tool("admin", "legacy")
 def stats() -> str:
     """Index health: doc/chunk counts, by-tier breakdown, model, config."""
     return json.dumps(stats_module.collect(_conn, cfg), indent=2)
 
 
-@mcp.tool()
+@pkb_tool("admin")
 def stats_json() -> str:
     """Structured alias for stats."""
     return stats()
 
 
-@mcp.tool()
+@pkb_tool("admin")
 def doctor_json(stale_days: int = 180) -> str:
     """Run KB quality checks: metadata, stale reviews, duplicate titles, chunks, wikilinks."""
     report = doctor_module.run_doctor(cfg, stale_days=stale_days)
